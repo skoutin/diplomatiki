@@ -548,8 +548,69 @@ def check_signal_chars(time_ser:np.ndarray, mat_file_name:str, downsampling:int,
 
 
 
+def check_scaling_results(tag:str, downsampling:int, norm_method:str, scaling_power = 4):
+    """This method just checks visually the impact of normalization on a group of signals"""
+    #### check normalization results in all signals
+    norm_method_list = ['min_max', 'max_abs', 'z_normaliyzation', 'robust_scaling', 'decimal_scaling', 'log_normalization', 'None']
+    scaler =lfp_scaler(norm_method, scaling_power)
 
-### για διαγραφή -  αντικαταστάθηκε από τον lfp_sclaler, αλλά θα ίσως θα ήταν χρήσιμη για classification προβλήματα όπου τα features οργανόνονται κατά columns
+    for idx, name in enumerate(lists_of_names(tag)):
+        signal = time_series(name, downsampling)[0,:]
+        print("Unscaled signal characteristics:")
+        check_signal_chars(signal, 'None', downsampling, check_basic_stats =1, check_time_chars=0, check_stat_diagrams=1, check_normality=1)
+        plt.plot(signal); plt.title(f'File name:{name}, Unscaled signal'); plt.show(); plt.close()
+        signal = scaler.fit_transform1d(signal)
+        print("\n\nScaled signal characteristicks:")
+        check_signal_chars(signal, 'None', downsampling, check_basic_stats =1, check_time_chars=0, check_stat_diagrams=1, check_normality=1)
+        plt.plot(signal); plt.title(f'File name:{name}, scaling method: {norm_method}'); plt.show(); plt.close()
+        if idx%3 == 0: 
+            cont = int(input('Do you want to continue to the next file; (Yes = 1, No=0)\n'))
+            if not(cont): break
+
+
+
+
+def check_signal_stats(tag:str, downsampling:int):
+    """This method just prints the statistical characteristics of each signal on a group of signals"""
+    for idx, name in enumerate(lists_of_names(tag)):
+        print(f'Characteristics of {name}')
+        check_signal_chars(np.array(0), name, downsampling, check_basic_stats =1, check_time_chars=0, check_stat_diagrams=1, check_normality=0)
+        print('\n\n')
+        if idx%3 == 0: 
+            cont = int(input('Do you want to continue to the next file; (Yes = 1, No=0)\n'))
+            if not(cont): break
+
+
+
+
+def check_signal_time_chars(tag:str, downsampling:int):
+    """This method just prints the time characteristics of each signal on a group of signals"""
+    for idx, name in enumerate(lists_of_names(tag)):
+        print(f'Characteristics of {name}')
+        check_signal_chars(np.array(0), name, downsampling, check_basic_stats =0, check_time_chars=1, check_stat_diagrams=0, check_normality=0)
+        print('\n\n')
+        if idx%3 == 0: 
+            cont = int(input('Do you want to continue to the next file; (Yes = 1, No=0)\n'))
+            if not(cont): break
+
+
+
+
+def check_signal_normality(tag:str, downsampling:int):
+    """This method just checks each signal for normality on a group of signals"""
+    for idx, name in enumerate(lists_of_names(tag)):
+        print(f'Check normality for {name}')
+        check_signal_chars(np.array(0), name, downsampling, check_basic_stats =1, check_time_chars=0, check_stat_diagrams=0, check_normality=1)
+        print('\n\n')
+        if idx%3 == 0: 
+            cont = int(input('Do you want to continue to the next file; (Yes = 1, No=0)\n'))
+            if not(cont): break
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+### για διαγραφή -  αντικαταστάθηκε από τον lfp_sclaler, αλλά θα ίσως θα ήταν χρήσιμη για classification προβλήματα όπου τα features οργανώνονται κατά columns
 def normalize_signal(signal:np.ndarray, method:str, direction:str, scaler, scaling_power:int):
     """This function normilises the data with different methods and inverses the normalization.
     "signal" variable is the data that will be normalized. If 'signal' is a one dimension array you should use signal.reshape(1, -1). If signal is a matrix and you want
@@ -826,66 +887,6 @@ class lfp_scaler:
 #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-def check_scaling_results(tag:str, downsampling:int, norm_method:str, scaling_power = 4):
-    """This method just checks visually the impact of normalization on a group of signals"""
-    #### check normalization results in all signals
-    norm_method_list = ['min_max', 'max_abs', 'z_normaliyzation', 'robust_scaling', 'decimal_scaling', 'log_normalization', 'None']
-    scaler =lfp_scaler(norm_method, scaling_power)
-
-    for idx, name in enumerate(lists_of_names(tag)):
-        signal = time_series(name, downsampling)[0,:]
-        print("Unscaled signal characteristics:")
-        check_signal_chars(signal, 'None', downsampling, check_basic_stats =1, check_time_chars=0, check_stat_diagrams=1, check_normality=1)
-        plt.plot(signal); plt.title(f'File name:{name}, Unscaled signal'); plt.show(); plt.close()
-        signal = scaler.fit_transform1d(signal)
-        print("\n\nScaled signal characteristicks:")
-        check_signal_chars(signal, 'None', downsampling, check_basic_stats =1, check_time_chars=0, check_stat_diagrams=1, check_normality=1)
-        plt.plot(signal); plt.title(f'File name:{name}, scaling method: {norm_method}'); plt.show(); plt.close()
-        if idx%3 == 0: 
-            cont = int(input('Do you want to continue to the next file; (Yes = 1, No=0)\n'))
-            if not(cont): break
-
-
-
-
-def check_signal_stats(tag:str, downsampling:int):
-    """This method just prints the statistical characteristics of each signal on a group of signals"""
-    for idx, name in enumerate(lists_of_names(tag)):
-        print(f'Characteristics of {name}')
-        check_signal_chars(np.array(0), name, downsampling, check_basic_stats =1, check_time_chars=0, check_stat_diagrams=1, check_normality=0)
-        print('\n\n')
-        if idx%3 == 0: 
-            cont = int(input('Do you want to continue to the next file; (Yes = 1, No=0)\n'))
-            if not(cont): break
-
-
-
-
-def check_signal_time_chars(tag:str, downsampling:int):
-    """This method just prints the time characteristics of each signal on a group of signals"""
-    for idx, name in enumerate(lists_of_names(tag)):
-        print(f'Characteristics of {name}')
-        check_signal_chars(np.array(0), name, downsampling, check_basic_stats =0, check_time_chars=1, check_stat_diagrams=0, check_normality=0)
-        print('\n\n')
-        if idx%3 == 0: 
-            cont = int(input('Do you want to continue to the next file; (Yes = 1, No=0)\n'))
-            if not(cont): break
-
-
-
-
-def check_signal_normality(tag:str, downsampling:int):
-    """This method just checks each signal for normality on a group of signals"""
-    for idx, name in enumerate(lists_of_names(tag)):
-        print(f'Check normality for {name}')
-        check_signal_chars(np.array(0), name, downsampling, check_basic_stats =1, check_time_chars=0, check_stat_diagrams=0, check_normality=1)
-        print('\n\n')
-        if idx%3 == 0: 
-            cont = int(input('Do you want to continue to the next file; (Yes = 1, No=0)\n'))
-            if not(cont): break
-
-#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 if  __name__ == "__main__":
     # downsample_scale = 10000
