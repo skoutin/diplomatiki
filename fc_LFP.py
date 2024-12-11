@@ -18,6 +18,7 @@ import sklearn.linear_model as lrm
 from sklearn.dummy import DummyRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import scipy.stats as stats
+import statsmodels.stats.descriptivestats as stats_ds
 import scipy.signal as sn 
 import colorednoise as cn
 
@@ -47,59 +48,73 @@ scalling_manner = scalling_manner_list[1]
 #------------------------------------------------------------------------------------------------------------------------------------------------------------
 #------------------------------------------------------------------------------------------------------------------------------------------------------------
 def main():
-    tag= 'All_WT_0Mg'  # determines which groups of files will be loaded, and used for training
-    downsample_scale = 100 # determines how many time will the signal be downsampled
+    tag= 'All_EA_WT_0Mg'  # determines which groups of files will be loaded, and used for training
+    only_EA = 1
+    tag_ml_methods = tag # for the training of older methods that use a subset of whole training data
+    downsample_scale = 10000 # determines how many time will the signal be downsampled
     sliding_window_step = 1 # this is the number of the window sliding for the creation of the windows that will be used for training
-
-    input_size = 300 # this is the number of the input_data of the LSTM, i.e. the number of points used for forecasting
-    hidden_state_dim = 2 # the size of the hidden/cell state of LSTM
-    num_layers = 1 # the number of consecutive LSTM cells the nn.LSTM will have (i.e. number of stacked LSTM's)
-    output_size = 100 # this is the number of output_data of the LSTM, i.e. the future points forecasted by the LSTM
-
-    extract_data = 0 # if it is True the data are being extracted by .mat files and are being saved in a .npy file, if it is False data are being loaded from the .npy file
-    if remote_PC: extract_data = False
-    batch_size = 1 # how many rows each batch will have. 1 is the minimum and creates the max number of batches but they are the smallest in terms of size
-    epochs = 2
-    lr = 0.1 # optimizer's learning rate
-    train_LSTM = 0 # for True it trains the model, for False it loads a saved model # ΠΡΟΣΟΧΗ αν κάνεις load μοντέλο που το έχεις εκπαιδεύσει με άλλο output_type προφανώς θα προκύψει σφάλμα
-    train_older = 0 # trains linear (autoregresson) and dummy regresson
-    save_load_model_number = 0 # καθορίζει ποιο LSTM μοντέλο θα φορτωθεί (η αποθήκευση γίνεται στο φάκελο και τα μεταφέρεις manually στους φακέλους model)
+    sliding_window_step_ml_methods = 1 # for the training of older methods that use a subset of whole training data
 
     scaling_method_list = ['min_max', 'max_abs', 'z_normalization', 'robust_scaling', 'decimal_scaling', 'log_normalization', 'None']
     scaling_method = scaling_method_list[2]
-    scaler = signal_handler.lfp_scaler(scaling_method, scaling_power=4)
-    
+    # scaler = signal_handler.lfp_scaler(scaling_method, scaling_power=4) # it useless now, scalers are created and used inside the functions
 
+    input_size = 200 # this is the number of the input_data of the LSTM, i.e. the number of points used for forecasting
+    hidden_state_dim = 30 # the size of the hidden/cell state of LSTM
+    num_layers = 1 # the number of consecutive LSTM cells the nn.LSTM will have (i.e. number of stacked LSTM's)
+    output_size = 100 # this is the number of output_data of the LSTM, i.e. the future points forecasted by the LSTM
     if fc_move_by_one: input_size = 100 
     if fc_move_by_one: output_size = input_size # με πρόβλεψη επόμενων σημείων πλήθους ίσου με το input, μετατοπισμένων κατά μία θέση
+    batch_size = 1 # how many rows each batch will have. 1 is the minimum and creates the max number of batches but they are the smallest in terms of size
+    epochs = 2
+    lr = 0.1 # optimizer's learning rate
+
+    extract_data = 0 # if it is True the data are being extracted by .mat files and are being saved in a .npy file, if it is False data are being loaded from the .npy file
+    if remote_PC: extract_data = False
+    train_LSTM = 1 # for True it trains the model, for False it loads a saved model # ΠΡΟΣΟΧΗ αν κάνεις load μοντέλο που το έχεις εκπαιδεύσει με άλλο output_type προφανώς θα προκύψει σφάλμα
+    load_lstm = 0
+    train_older = 1 # trains linear (autoregresson) and dummy regresson
+    load_older = 0
+    save_load_model_number = 0 # καθορίζει ποιο LSTM μοντέλο θα φορτωθεί (η αποθήκευση γίνεται στο φάκελο και τα μεταφέρεις manually στους φακέλους model)
+
+    # Extract and save data for training and validation
+    if extract_data:
+        save_load_path = PATH + 'project_files/fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy'
+        lfp_data = signal_handler.extract_data(tag, downsample_scale, save_load_path) 
+        print('Extracted/Loaded data have shape:', lfp_data.shape) # πρόκειται για αρχεία (καταγραφές LFP) 20 λεπτων. Οι γραμμές είναι ο αριθμός των καταγραφών και οι στήλες είναι το μήκος των καταγραφών
 
 
+    
     if train_LSTM:
-        lstm_model = LSTM_train(tag, downsample_scale, sliding_window_step, hidden_state_dim, input_size, output_size, num_layers, batch_size, lr, epochs, scaling_method, save_load_model_number, extract_data)
-    if not(train_LSTM):
+        lstm_model = LSTM_train(tag, downsample_scale, sliding_window_step, hidden_state_dim, input_size, output_size, num_layers, batch_size, lr, epochs, scaling_method, save_load_model_number)
+    if load_lstm:
         dict_train = load_params(save_load_model_number)
         input_size, hidden_state_dim, num_layers, output_size = dict_train['input_size'], dict_train['hidden_state_dim'], dict_train['num_layers'], dict_train['output_size'] # χρειάζονται για το loading του LSTM
         downsample_scale, scaling_method = dict_train['downsample_scale'], dict_train['scaling_method'] # χρειάζονται για το generate/compare
-        lstm_model = load_lstm(save_load_model_number, input_size, hidden_state_dim, num_layers, output_size)
+        lstm_model = LSTM_load(save_load_model_number, input_size, hidden_state_dim, num_layers, output_size)
 
     # test how good trained LSTM is
-    print('\nLoad test series in order to test trained or loaded LSTM')
-    if not(remote_PC): test_series = signal_handler.combine (signal_handler.lists_of_names('test'), downsample_scale) # το τεστ είναι ένα ολόκληρο σήμα, ώστε διαφορετικά starting points να ελέγξουν το forecasting σε όλες τις καταστάσεις (EA, IA, SLA)
-    if remote_PC: test_series = np.load(PATH + 'project_files/test_series_ds'+ str(downsample_scale)  + '.npy') # for remote pc
-    print('length of test series is ', test_series.shape)
-    num_gen_points = 3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
-    number_of_starting_points = 32 #32000 # καθορίζει πόσα τυχαία σημεία έναρξης της πρόβλεψης θα παρθούν για την παραγωγή των λιστών της κάθε μετρικής
-    make_barplots = True # False
-    check_lstm_metrics(lstm_model, test_series, num_gen_points, number_of_starting_points, scaling_method, make_barplots)
+    if train_LSTM or load_lstm:
+        print('\nLoad test series in order to test trained or loaded LSTM')
+        if not(remote_PC): test_series = signal_handler.combine (signal_handler.lists_of_names('test'), downsample_scale) # το τεστ είναι ένα ολόκληρο σήμα, ώστε διαφορετικά starting points να ελέγξουν το forecasting σε όλες τις καταστάσεις (EA, IA, SLA)
+        if remote_PC: test_series = np.load(PATH + 'project_files/test_series_ds'+ str(downsample_scale)  + '.npy') # for remote pc
+        if only_EA and not(remote_PC): test_series = signal_handler.time_series('test1', downsample_scale)
+        if only_EA and remote_PC: test_series = np.load(PATH + 'project_files/test_series_EA_ds'+ str(downsample_scale)  + '.npy') # for remote pc
+        print('length of test series is ', test_series.shape)
+        num_gen_points = output_size #3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
+        if output_size < 5: num_gen_points = 150 # για την περίπτωση που το ouput είναι πολύ μικρό
+        number_of_starting_points = 40 #32000 # καθορίζει πόσα τυχαία σημεία έναρξης της πρόβλεψης θα παρθούν για την παραγωγή των λιστών της κάθε μετρικής
+        make_barplots = True # False
+        check_lstm_metrics(lstm_model, test_series, num_gen_points, number_of_starting_points, scaling_method, make_barplots)
 
 
     # train linear and dummy regressors with the same data
-    linear_save_name = 'lineeear'
-    dummy_save_name = 'duuuumy' #'None'
+    linear_save_name = 'linear_fc_model'
+    dummy_save_name = 'dummy_fc_model' #'None'
     if train_older:
-        linear = train_older_methods('linear', tag, downsample_scale, scaling_method, input_size, output_size, sliding_window_step, batch_size, model_save_name=linear_save_name)
-        dummy = train_older_methods('dummy', tag, downsample_scale, scaling_method, input_size, output_size, sliding_window_step, batch_size, model_save_name=dummy_save_name)
-    if not(train_older):
+        linear = train_older_methods('linear', tag_ml_methods, downsample_scale, scaling_method, input_size, output_size, sliding_window_step_ml_methods, batch_size, model_save_name=linear_save_name)
+        dummy = train_older_methods('dummy', tag_ml_methods, downsample_scale, scaling_method, input_size, output_size, sliding_window_step_ml_methods, batch_size, model_save_name=dummy_save_name)
+    if load_older:
         with open(PATH + 'project_files/' + linear_save_name + '.pkl', 'rb') as file: linear = pickle.load(file)
         with open(PATH + 'project_files/' + dummy_save_name + '.pkl', 'rb') as file: dummy = pickle.load(file)
     
@@ -113,51 +128,54 @@ def main():
     # print('length of test series is ', test_series.shape); print('\n\n')
 
     # compare statisticaly different methods
-    print('\n')
-    number_of_st_points = 40 # καθορίζει πόσα τυχαία σημεία έναρξης της πρόβλεψης θα παρθούν για τη στατιστική σύγκριση των μεθόδων
-    num_gen_points = 3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
-    print('COMPARISON OF LSTM FORECASTING WITH AUTOREGRESSIC FORECASTING')
-    metric_used = 'MAE'
-    print('Metric used: ' + metric_used)
-    lstm_MAE_list, linear_MAE_list = produce_metric_samples(test_series, lstm_model, linear, number_of_st_points, num_gen_points, scaling_method, metric=metric_used)
-    statistical_comparison(lstm_MAE_list, linear_MAE_list, normality_test ='SW')
-    print('\n')
-    print('COMPARISON OF LSTM FORECASTING WITH DUMMY REGRESSOR')
-    metric_used = 'max Cross-cor'
-    print('Metric used: ' + metric_used)
-    lstm_MAE_list, dummy_MAE_list = produce_metric_samples(test_series, lstm_model, dummy, number_of_st_points, num_gen_points, scaling_method, metric=metric_used)
-    statistical_comparison(lstm_MAE_list, dummy_MAE_list, normality_test ='SW')
-    print('\n')
-    print('COMPARISON OF LSTM FORECASTING WITH PINK NOISE')
-    metric_used = 'RMS-PSD'
-    print('Metric used: ' + metric_used)
-    lstm_MAE_list, noise_MAE_list = produce_metric_samples(test_series, lstm_model, 'pink_noise', number_of_st_points, num_gen_points, scaling_method, metric=metric_used)
-    statistical_comparison(lstm_MAE_list, noise_MAE_list, normality_test ='SW')
-    print('\n')
+    if ((train_LSTM or load_lstm) and (train_older or load_older)):
+        print('\n')
+        number_of_st_points = 40 # καθορίζει πόσα τυχαία σημεία έναρξης της πρόβλεψης θα παρθούν για τη στατιστική σύγκριση των μεθόδων
+        num_gen_points = output_size # 3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
+        if output_size < 5: num_gen_points = 150 # για την περίπτωση που το ouput είναι πολύ μικρό
+        print('COMPARISON OF LSTM FORECASTING WITH AUTOREGRESSIC FORECASTING')
+        metric_used = 'MAE'
+        print('Metric used: ' + metric_used)
+        lstm_MAE_list, linear_MAE_list = produce_metric_samples(test_series, lstm_model, linear, number_of_st_points, num_gen_points, scaling_method, metric=metric_used)
+        statistical_comparison(lstm_MAE_list, linear_MAE_list, normality_test ='SW')
+        print('\n')
+        print('COMPARISON OF LSTM FORECASTING WITH DUMMY REGRESSOR')
+        metric_used = 'max Cross-cor'
+        print('Metric used: ' + metric_used)
+        lstm_MAE_list, dummy_MAE_list = produce_metric_samples(test_series, lstm_model, dummy, number_of_st_points, num_gen_points, scaling_method, metric=metric_used)
+        statistical_comparison(lstm_MAE_list, dummy_MAE_list, normality_test ='SW')
+        print('\n')
+        print('COMPARISON OF LSTM FORECASTING WITH PINK NOISE')
+        metric_used = 'RMS-PSD'
+        print('Metric used: ' + metric_used)
+        lstm_MAE_list, noise_MAE_list = produce_metric_samples(test_series, lstm_model, 'pink_noise', number_of_st_points, num_gen_points, scaling_method, metric=metric_used)
+        statistical_comparison(lstm_MAE_list, noise_MAE_list, normality_test ='SW')
+        print('\n')
 
-    # visual presentations of forecasting
-    starting_point = np.random.randint(lstm_model.input_size, test_series.shape[1]) # εδώ θα χρειαστεί μόλις ένα σημείο για visualization
-    num_gen_points = 3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
-    test_signal = test_series[0,:]
-    #tensor_test_signal = torch.from_numpy(test_signal).clone().float()
-    fs = 1/(test_series[1,3] - test_series[1,2])
-    actual_signal = test_signal [starting_point : starting_point + num_gen_points]
-    lstm_gen_signal = lstm_generate_lfp(lstm_model, test_signal[:starting_point], num_gen_points, scaling_method, only_gen_signal=1)
-    print('Plot/compare LSTM-generated and actual signal in time and in frequency domain')
-    visual_fc_comparison(lstm_gen_signal, actual_signal, fs, domain = 'both')
-    linear_gen_signal = ml_generate_lfp(linear, test_signal[:starting_point], input_size, output_size, num_gen_points, scaling_method, only_generated = 1)
-    print('Plot/compare linear-generated and actual signal in time and in frequency domain')
-    visual_fc_comparison(linear_gen_signal, actual_signal, fs, domain ='both')
-    dummy_gen_signal = ml_generate_lfp(dummy, test_signal[:starting_point], input_size, output_size, num_gen_points, scaling_method, only_generated = 1)
-    print('Plot/compare dummy-generated and actual signal in time and in frequency domain')
-    visual_fc_comparison(dummy_gen_signal, actual_signal, fs, domain ='cross-correlation')
+        # visual presentations of forecasting
+        starting_point = np.random.randint(lstm_model.input_size, test_series.shape[1]) # εδώ θα χρειαστεί μόλις ένα σημείο για visualization
+        num_gen_points = output_size #3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
+        if output_size < 5: num_gen_points = 150 # για την περίπτωση που το ouput είναι πολύ μικρό
+        test_signal = test_series[0,:]
+        #tensor_test_signal = torch.from_numpy(test_signal).clone().float()
+        fs = 1/(test_series[1,3] - test_series[1,2])
+        actual_signal = test_signal [starting_point : starting_point + num_gen_points]
+        lstm_gen_signal = lstm_generate_lfp(lstm_model, test_signal[:starting_point], num_gen_points, scaling_method, only_gen_signal=1)
+        print('Plot/compare LSTM-generated and actual signal in time and in frequency domain')
+        visual_fc_comparison(lstm_gen_signal, actual_signal, fs, domain = 'both')
+        linear_gen_signal = ml_generate_lfp(linear, test_signal[:starting_point], input_size, output_size, num_gen_points, scaling_method, only_generated = 1)
+        print('Plot/compare linear-generated and actual signal in time and in frequency domain')
+        visual_fc_comparison(linear_gen_signal, actual_signal, fs, domain ='both')
+        dummy_gen_signal = ml_generate_lfp(dummy, test_signal[:starting_point], input_size, output_size, num_gen_points, scaling_method, only_generated = 1)
+        print('Plot/compare dummy-generated and actual signal in time and in frequency domain')
+        visual_fc_comparison(dummy_gen_signal, actual_signal, fs, domain ='cross-correlation')
 
 
 #------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 #------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-def LSTM_train(tag, downsample_scale, sliding_window_step, hidden_state_dim, input_size, output_size, num_layers, batch_size, lr, epochs, scaling_method, save_load_model_number, extract_data = False):
+def LSTM_train(tag, downsample_scale, sliding_window_step, hidden_state_dim, input_size, output_size, num_layers, batch_size, lr, epochs, scaling_method, save_load_model_number):
     print('\nTrain LSTM-RNN:')
 
     # creates a folder to save the new trained model
@@ -174,9 +192,8 @@ def LSTM_train(tag, downsample_scale, sliding_window_step, hidden_state_dim, inp
     scaler = signal_handler.lfp_scaler(scaling_method, scaling_power=4)
 
     # Import data
-    save_load_path = PATH + 'project_files/LSTM_fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy'
-    if extract_data: lfp_data = signal_handler.extract_data(tag, downsample_scale, save_load_path) 
-    if not(extract_data): lfp_data = np.load(save_load_path)
+    save_load_path = PATH + 'project_files/fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy'
+    lfp_data = np.load(save_load_path)
     print('Extracted/Loaded data have shape:', lfp_data.shape) # πρόκειται για αρχεία (καταγραφές LFP) 20 λεπτων. Οι γραμμές είναι ο αριθμός των καταγραφών και οι στήλες είναι το μήκος των καταγραφών
 
     # prepare data
@@ -245,7 +262,7 @@ def prepare_data(lfp_data_matrix, scaler, input_size, output_size, window_step, 
     if fc_move_by_one: target_data = windowed_data[:,:,1:output_size+1] # με πρόβλεψη επόμενων σημείων πλήθους ίσου με το input, μετατοπισμένων κατά μία θέση
     if run_to_gpu_all: input_data=input_data.to(device); target_data=target_data.to(device) # εδώ τα data σίγουρα παύουν να είναι views. Για αυτό πιο κάτω στο training μόνο σε αυτή την περίπτωση τα bathces δεν αντιγράφονται
     dataset = torch.utils.data.TensorDataset(input_data, target_data); del input_data; del target_data
-    train_data, val_data = torch.utils.data.dataset.random_split(dataset, [0.9, 0.1]); del dataset
+    train_data, val_data = torch.utils.data.dataset.random_split(dataset, [0.8, 0.2]); del dataset
     train_loader = torch.utils.data.DataLoader(dataset=train_data, batch_size=batch_size) # αν θέλεις να τρέξει όλα τα δεδομένα σε ένα batch, βάλε -> batch_size=train_data.__len__()
     val_loader = torch.utils.data.DataLoader(dataset=val_data, batch_size=batch_size) # αν θέλεις να τρέξει όλα τα δεδομένα σε ένα batch, βάλε -> batch_size=val_data.__len__()
     if return_loaders: return train_loader, val_loader, scaler
@@ -402,7 +419,7 @@ def create_training_report(downsample_scale, hidden_state_dim, num_layers, batch
 
 
 # load the LSTM model if you have saved it, in order not to run training again if its time-consuming
-def load_lstm(model_number, input_size, hidden_state_dim, num_layers, output_size):
+def LSTM_load(model_number, input_size, hidden_state_dim, num_layers, output_size):
     model = LSTM_fc(input_size, hidden_state_dim, num_layers, output_size) 
     model.load_state_dict(torch.load(PATH + 'project_files/models/model' + str(model_number) + '/LSTM_forecasting_model.pt'))
     print('LSTM model has been loaded')
@@ -513,7 +530,7 @@ def train_older_methods(ml_method, tag, downsample_scale, scaling_method, input_
     print('\nTrain ' + ml_method + ' regressor:')
     scaler = signal_handler.lfp_scaler(scaling_method, scaling_power=4)
 
-    save_load_path= PATH + 'project_files/LSTM_fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy' # my PC load file
+    save_load_path= PATH + 'project_files/fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy' # my PC load file
     lfp_data = np.load(save_load_path)
     print('Extracted/Loaded data have shape:', lfp_data.shape) # πρόκειται για αρχεία (καταγραφές LFP) 20 λεπτων. Οι γραμμές είναι ο αριθμός των καταγραφών και οι στήλες είναι το μήκος των καταγραφών
     x_data, y_data, scaler  = prepare_data(lfp_data, scaler, input_size, output_size, sliding_window_step, batch_size, cut_with_numpy=True, return_loaders=False)
@@ -683,7 +700,7 @@ def produce_metric_samples(test_series, lstm_model, comparing_model, number_of_s
 
 #--------------------------------------------------------------------------------------------
 
-def statistical_comparison(lstm_metric_list, comparing_metric_list, normality_test):
+def statistical_comparison(lstm_metric_list, comparing_metric_list, normality_test, plot_visuals = True):
     '''Υπαρχουν 3 κριτήρια που πρέπει να πληρούνται για τη χρήση παραμετρικών κριτηρίων όπως το t-test: 1) οι κατανομές των δειγμάτων να είναι κανονικές, 2) οι κατανομές να 
     έχουν ίσες διακυμάνσεις (κάτι που δε χρειάζεται στα εξαρτημένα δείγματα), και τα δεοδμένα να είναι ποσοτικά. Οπότε ουσιαστικά εδω πρέπει να ελεγχθει μόνο η κανονικότητα'''
     '''The Shapiro–Wilk test is more appropriate method for small sample sizes (<50 samples) although it can also be handling on larger sample size while Kolmogorov–Smirnov 
@@ -692,44 +709,90 @@ def statistical_comparison(lstm_metric_list, comparing_metric_list, normality_te
     comparing_metric_list = np.array(comparing_metric_list)
     print('LSTM metric computed mean is', lstm_metric_list.mean())
     print('2nd method metric computed mean is', comparing_metric_list.mean())
-    if normality_test == 'SW':
-        _ , p1 = stats.shapiro(lstm_metric_list)
-        _ , p2 = stats.shapiro(comparing_metric_list)
-    if normality_test == 'KS':
-        _, p1 = stats.kstest(lstm_metric_list, 'norm')
-        _, p2 = stats.kstest(comparing_metric_list, 'norm')
+    print('LSTM metric computed median is', np.median(lstm_metric_list))
+    print('2nd method metric computed meadian is', np.median(comparing_metric_list))
+    diffs = lstm_metric_list - comparing_metric_list
 
-    if p1 > 0.05 and p2 > 0.05: # the null hypothesis that both the datasets come from normal distributions, cannot be rejected
-        print ('The metrics in different starting points are distributed normaly. t-test of related samples will be carried out')
+    if plot_visuals:
+        # make histograms to inspect distributions
+        fig, axes = plt.subplots(2)
+        axes[0].hist(lstm_metric_list)
+        axes[0].set_title('LSTM metric list - distribution')
+        axes[0].set_xlabel('metric values')
+        axes[0].set_ylabel('frequencies')
+        axes[1].hist(comparing_metric_list)
+        axes[1].set_title('Comparing metric list - distribution')
+        axes[1].set_xlabel('metric values')
+        axes[1].set_ylabel('frequencies')
+        fig.tight_layout()
+        plt.show()
+        plt.close()
+        
+        # make boxplots
+        dict_boxplot = {'LSTM metric list':lstm_metric_list, 'Comparing metric list':comparing_metric_list}
+        plt.boxplot(dict_boxplot.values(), labels=dict_boxplot.keys(), patch_artist=True)#, boxprops=dict(color='darkblue'), medianprops=dict(color='red'), whiskerprops=dict(color='yellow'))
+        plt.xlabel('metrics by ML algorithm')
+        plt.ylabel('metric values')
+        plt.axhline(y=np.median(lstm_metric_list), linestyle = '--', color = '0.5')
+        plt.axhline(y=np.median(comparing_metric_list), linestyle = '--', color = '0.5')
+        plt.show()
+        plt.close()
+
+
+    if normality_test == 'SW':
+        _ , p_norm = stats.shapiro(diffs)
+    if normality_test == 'KS':
+        _, p_norm = stats.kstest(diffs, 'norm')
+    # print('NORMALITY P  ==== ', p_norm)
+    _, p_skew = stats.skewtest(diffs)
+    # print('SKEWNESS P  ==== ', p_skew)
+
+    if p_norm > 0.01: # the null hypothesis that the diferences follow a normal distribution, cannot be rejected
+        print ('The differences of metrics in random starting points are distributed normaly. t-test of related samples will be carried out')
         stat_test = stats.ttest_rel(lstm_metric_list, comparing_metric_list)
+        p_test = stat_test.pvalue
         effect_size_method = "Cohen's d"
         effect_size = Cohens_d(lstm_metric_list, comparing_metric_list) # inerpretation: d=0.01 => no effect, d=0.2 => small effect, d=0.5 => medium effect, d=0.2 => large effect, d=1.2 => very large effect, d=2.0 => huge effect
-    else:
-        print ('The metrics in different starting points are not distributed normaly. Wilcoxon (T) will be carried out')
-        print ('The fact that metrics in different starting points are not distributed normally, hints that foracasting may not be equally effective in different parts of the LFP signal')
+    elif p_skew > 0.01: # the null hypothesis that the diferences come from a symmetric distribution, cannot be rejected
+        print ('The differences of metrics in random starting points are not distributed normaly but are distributed symmetrically. Wilcoxon (T) will be carried out')
         stat_test = stats.wilcoxon(lstm_metric_list, comparing_metric_list, method = 'approx') # method='approx' is used in order to return the z-statistic which is required for the effect size
+        p_test = stat_test.pvalue
         z = stat_test.zstatistic
         effect_size_method = "Wilcoxon r effect size"
         effect_size = Wilcoxon_r(lstm_metric_list, comparing_metric_list, z) # inerpretation: abs(r)<0.1 => no effect, abs(r)=0.1 => small effect, abs(r)=0.3 => medium effect, abs(r)=0.5 => medium effect
+    else: # the data are irregular. The test remained for usage is the sign-test
+        print ('The differences of metrics in random starting points are neither distributed normaly nor distributed symmetrically. Sign-test will be carried out')
+        stat_test = stats_ds.sign_test(diffs, mu0 = 0)
+        p_test = stat_test[1]
+        effect_size_method  = "Cohen's g"
+        effect_size = Cohens_g(lstm_metric_list, comparing_metric_list) # inerpretation: g<0.05 => negligible, 0.05<g<0.15 => small, 0.15<g<0.25 => medium, g>0.25 => large
     print('results:', stat_test)
-    print('p-value is', stat_test.pvalue)
-    if stat_test.pvalue < 0.05: print('Thus there is statistically significant difference between the two means')
-    elif stat_test.pvalue >= 0.05: print('Thus the null hypothesis that means of metrics are equal, cannot be rejected')
-    if stat_test.pvalue < 0.05: print(f'Effect size ({effect_size_method}) is {effect_size}')
+    print('p-value is', p_test)
+    if p_test < 0.05: print('Thus there is statistically significant difference between the two means of the metrics')
+    elif p_test >= 0.05: print('Thus the null hypothesis that means of metrics are equal, cannot be rejected')
+    if p_test < 0.05: print(f'Effect size ({effect_size_method}) is {effect_size}')
 
 def Cohens_d(x1, x2):
     nx1 = len(x1)
     nx2 = len(x2)
     dof = nx1 + nx2 - 2
     s = np.sqrt(((nx1-1)*np.std(x1, ddof=1) ** 2 + (nx2-1)*np.std(x2, ddof=1) ** 2) / dof)
-    coen_d= np.abs(x1.mean()-x2.mean())/s
-    return coen_d
+    cohen_d= np.abs(x1.mean()-x2.mean())/s
+    return cohen_d
 
 def Wilcoxon_r(x1, x2, z):
     nx1 = len(x1)
     nx2 = len(x2)
     r = z / (nx1 + nx2)
     return r
+
+def Cohens_g(x1,x2):
+    diffs = x1-x2
+    positive_values = np.sum(diffs>0)
+    all_values = len(x1)
+    proportion = positive_values / all_values
+    cohen_g = np.abs(proportion - 0.5)
+    return cohen_g
 #--------------------------------------------------------------------------------------------
 
 # Αυτή η μέθοδος αναπαριστά γραφικά, πόσο καλή είναι η προβλεψη κατά μήκος του test σήματος LFP (εφόσον χρησιμοποιείται ένα σήμα για testing)
