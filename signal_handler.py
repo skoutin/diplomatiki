@@ -209,8 +209,8 @@ def extract_data(tag:str, downsampling:int, save_path:str):
         # print(signal.shape)
         data_list.append(signal)
     print('extract data -> lfp_signal lengths before resize are: ', resize_list)
-    n = max(resize_list) # gia na epektinei me zero-padding oso to megisto mikos lfp
-    # n = min(resize_list) # gia na kovei oso to elaxisto mikos lfp
+    # n = max(resize_list) # gia na epektinei me zero-padding oso to megisto mikos lfp
+    n = min(resize_list) # gia na kovei oso to elaxisto mikos lfp
     for signal in data_list:
         if downsampling != 'None': signal.resize((int(n),), refcheck=False) # gia na einai ola ta simata isou mikous
         else: signal.resize((int(n),), refcheck=False) # gia na einai ola ta simata isou mikous
