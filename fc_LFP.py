@@ -68,7 +68,7 @@ def main(): # -> η main function δεν είναι τελική . Ειδικά 
     # sliding_window_step = input_size # for not overlaping windows
     hidden_state_dim = 1 # the size of the hidden/cell state of LSTM
     num_layers = 1 # the number of consecutive LSTM cells the nn.LSTM will have (i.e. number of stacked LSTM's)
-    output_size = 1 # this is the number of output_data of the LSTM, i.e. the future points forecasted by the LSTM
+    output_size = 30 # this is the number of output_data of the LSTM, i.e. the future points forecasted by the LSTM
     if fc_move_by_one: input_size = 500 
     if fc_move_by_one: output_size = input_size # με πρόβλεψη επόμενων σημείων πλήθους ίσου με το input, μετατοπισμένων κατά μία θέση
     batch_size = 1024 # how many rows each batch will have. 1 is the minimum and creates the max number of batches but they are the smallest in terms of size
@@ -78,11 +78,11 @@ def main(): # -> η main function δεν είναι τελική . Ειδικά 
 
     extract_data = 0 # if it is True the data are being extracted by .mat files and are being saved in a .npy file, if it is False data are being loaded from the .npy file
     if remote_PC: extract_data = False
-    train_LSTM = 0 # for True it trains the model, for False it loads a saved model # ΠΡΟΣΟΧΗ αν κάνεις load μοντέλο που το έχεις εκπαιδεύσει με άλλο output_type προφανώς θα προκύψει σφάλμα -> επιλύθηκε με την αποθήκευση και τη φόρτωση των παραμέτρων μαζί με το LSTM
-    load_lstm = 1
+    train_LSTM = 1 # for True it trains the model, for False it loads a saved model # ΠΡΟΣΟΧΗ αν κάνεις load μοντέλο που το έχεις εκπαιδεύσει με άλλο output_type προφανώς θα προκύψει σφάλμα -> επιλύθηκε με την αποθήκευση και τη φόρτωση των παραμέτρων μαζί με το LSTM
+    load_lstm = 0
     train_older = 0 # trains linear (autoregresson) and dummy regresson
     load_older = 0
-    save_load_model_number = 36 # καθορίζει ποιο LSTM μοντέλο θα φορτωθεί (η αποθήκευση γίνεται στο φάκελο και τα μεταφέρεις manually στους φακέλους model)
+    save_load_model_number = 0 # καθορίζει ποιο LSTM μοντέλο θα φορτωθεί (η αποθήκευση γίνεται στο φάκελο και τα μεταφέρεις manually στους φακέλους model)
 
     ## Warnings
     if run_to_gpu_all and (scaling_method in ['norm_batches', 'norm_only_input_batches', 'input_layer_norm_no_output_norm']): 
@@ -236,6 +236,7 @@ def LSTM_train(tag, downsample_scale, sliding_window_step, hidden_state_dim, inp
     ## NN instance creation
     lstm_model_init = LSTM_fc(input_size, hidden_state_dim, num_layers, output_size)
     criterion = nn.MSELoss()
+    # criterion = norm_cross_cor_loss()
     optimizer = optim.SGD(lstm_model_init.parameters(), lr, momentum)
     # optimizer = optim.Adam(lstm_model_init.parameters(), lr)
     # optimizer = optim.LBFGS(lstm_model.parameters(), lr) # for it to work u have to craete a closure function. See pytorch documentation fo more info
@@ -402,6 +403,22 @@ class LSTM_fc(nn.Module):
             out = torch.unsqueeze(out, 1)
         return out
     
+## Create custom loss function of normalized cross correlation (the purpose is to maximaze cross-correlation by minimizing [1-cross_correlation])
+class norm_cross_cor_loss(nn.Module):
+    def __init__(self):
+        super(norm_cross_cor_loss, self).__init__()
+
+    def forward(self, predicted, target):
+        pred_diffs = predicted - torch.mean(predicted, dim=1).unsqueeze(1).repeat(1, predicted.shape[1])       
+        target_diffs = target - torch.mean(target, dim=1).unsqueeze(1).repeat(1, target.shape[1]) 
+        numerator = torch.sum(pred_diffs*target_diffs, dim=1)
+        denominator_pred = torch.sqrt(torch.sum(pred_diffs**2, dim=1))
+        denominator_target = torch.sqrt(torch.sum(target_diffs**2, dim=1))
+        norm_cc = torch.div(numerator, denominator_pred*denominator_target)
+        # norm_cc = torch.abs(norm_cc) # negative values might make learning harder
+        loss_value = 1 - norm_cc # the purpose is for norm_cross_cor to be as closest to 1 as possble. So if 1 - loss_value = 0 => loss_value = 1
+        loss_value = loss_value.mean() # sum losses of all batch data
+        return loss_value
 #--------------------------------------------------------------------------------------------
 
 ### train & validate the LSTM model
