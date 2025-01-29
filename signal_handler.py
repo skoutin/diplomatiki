@@ -610,168 +610,6 @@ def check_signal_normality(tag:str, downsampling:int):
 #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-### για διαγραφή -  αντικαταστάθηκε από τον lfp_sclaler, αλλά θα ίσως θα ήταν χρήσιμη για classification προβλήματα όπου τα features οργανώνονται κατά columns
-# def normalize_signal(signal:np.ndarray, method:str, direction:str, scaler, scaling_power:int):
-#     """This function normilises the data with different methods and inverses the normalization.
-#     "signal" variable is the data that will be normalized. If 'signal' is a one dimension array you should use signal.reshape(1, -1). If signal is a matrix and you want
-#     row-to-row normalization you should transpose it as input to the function (signal.T)
-#     "method" is the normalization method can be one of these: ['min_max', 'max_abs', 'z_normalization', 'robust_scaling', 'decimal_scaling', 'log_normalization', 'None']
-#     "direction" decides if the data will be normalized (direction = 'normalize') or denormalized (direction = 'inverse')
-#     "scaler" is the sclare that has been used for normalization. It is used in the denormalazation process. If you normalize data have -> scaler='None'  
-#     "scaling_power" is the power that will be used in decimal scaling normalization. In other methods this variable is irrelevant"""
-#     import sklearn.preprocessing as prp
-#     if direction == 'normalize':
-#         if method == 'min_max':
-#             scaler = prp.MinMaxScaler()
-#             signal_norm = scaler.fit_transform(signal)
-#         if method == 'max_abs':
-#             scaler = prp.MaxAbsScaler()
-#             signal_norm = scaler.fit_transform(signal)
-#         if method == 'z_normalization':
-#             scaler = prp.StandardScaler()
-#             signal_norm = scaler.fit_transform(signal)
-#         if method == 'robust_scaling':
-#             scaler = prp.RobustScaler()
-#             signal_norm = scaler.fit_transform(signal)
-#         if method == 'decimal_scaling':
-#             scaler = 'No scaler'
-#             signal_norm = signal * (10**scaling_power)
-#         if method == 'log_normalization':
-#             scaler = 'No scaler'
-#             signal_norm = np.log10(signal)
-#         if method == 'None':
-#             scaler = 'No scaler'
-#             signal_norm = signal
-#         signal_norm = np.squeeze(signal_norm)
-#         signal_norm = signal_norm.T
-#         return signal_norm, scaler
-#     if direction == 'inverse':
-#         if method in ['min_max', 'max_abs', 'z_normalization', 'robust_scaling']:
-#             signal_denorm = scaler.inverse_transform(signal)
-#         if method == 'decimal_scaling':
-#             signal_denorm = signal * (10**(-scaling_power))
-#         if method == 'log_normalization':
-#             signal_denorm = 10**signal
-#         if method == 'None':
-#             signal_denorm = signal
-#         signal_denorm= np.squeeze(signal_denorm)
-#         signal_denorm = signal_denorm.T
-#         return signal_denorm
-
-
-
-
-# παλιός scaler που δεν περιέχει ως ιδιοχαρακτηριστικό τη scaling method. Διέγραψέ τον αν ο καινούργιος δουλεύει
-# class lfp_scaler_old:
-#     ### This class is an objects that scales/normalizes the signal
-#     ### αυτή η κλάσση δεν περιέχει inverse2d και inverse3d επειδή τα test input και test output του LSTM θα είναι μονοδιάστατα σήματα (βεβαία αν είχε inverse2d και inverse3d
-#     # ή θα γίνονταν με ενιαιες παραμέτρους κανονικοποίησης, ή οι παράμετροι κανονικοποιήσης θα έπρεπε να γίνουν πίνακεες)
-#     ### αυτή η κλση έχει τον κίνδυνο να είναι αρκετά πιο αργή για μεγάλους πίνακες από τους έτοιμους scalers του sklearn
-#     def __init__(self, scaling_power):
-#         self.mean = np.NaN
-#         self.std = np.NaN
-#         self.min = np.NaN
-#         self.max = np.NaN
-#         self.decimal_scale = scaling_power
-#         self.Q1 = np.NaN # 25%
-#         self.Q2 = np.NaN # this is the median
-#         self.Q3 = np.NaN # 75%
-
-#     def inspect_scale_params(self):
-#         """This fucntion prints all the normalization parameters"""
-#         print("Mean is: ", self.mean)
-#         print("Standard deviation is: ", self.std)
-#         print("Minimum is: ", self.min)
-#         print("Maximum is: ", self.max)
-#         print("First (25%) quantile is: ", self.Q1)
-#         print("Median (50% quantile) is: ", self.Q2)
-#         print("Third (75%) quantile is: ", self.Q3)
-
-#     def fit1d(self, signal: np.ndarray, method):
-#         """This function extracts the normalization parameters of a 1d time-series.
-#         This function is made for 1d signal, but in can used for a multi-dimensional matrix as well, extracting the normalization 
-#         parameters for the whole set of samples altogether """
-#         if method == 'min_max': self.min = signal.min(); self.max = signal.max()
-#         if method == 'max_abs': self.max = signal.max()
-#         if method == 'z_normalization': self.mean = signal.mean(); self.std = signal.std()
-#         if method == 'robust_scaling': self.Q1 = np.quantile(signal, 0.25); self.Q2 = np.median(signal); self.Q3 = np.quantile(signal, 0.75)
-#         if method == 'fit_all_params':
-#             self.mean = signal.mean()
-#             self.std = signal.std()
-#             self.min = signal.min()
-#             self.max = signal.max()
-#             self.Q1 = np.quantile(signal, 0.25)
-#             self.Q2 = np.median(signal)
-#             self.Q3 = np.quantile(signal, 0.75)
-    
-#     def normalize1d (self, signal, method):
-#         """"This function normalizes a one dimensional time-series with the fited normalization parameters
-#         This function is made for 1d signal, but in can used for a multi-dimensional matrix as well, ableit with the same normalization parameters for the whole data and not
-#         individualized for every line i.e. every signal"""
-#         epsilon = 10 ** (-30) ## to prevent errors due to zero denominator 
-#         if method == 'min_max': signal_norm = (signal - self.min)/((self.max - self.min) + epsilon)
-#         if method == 'max_abs': signal_norm = signal/(np.abs(self.max) + epsilon)
-#         if method == 'z_normalization': signal_norm = (signal - self.mean)/(self.std + epsilon)
-#         if method == 'robust_scaling': signal_norm = (signal - self.Q2)/ ((self.Q3 - self.Q1) + epsilon)
-#         if method == 'decimal_scaling': signal_norm = signal * (10**self.decimal_scale)
-#         if method == 'log_normalization': 
-#             if signal.min()<0: 
-#                 print ("signal has negative values, it can't be logarithmized. The initial signal will be returnd")
-#                 signal_norm  = signal
-#             else: signal_norm = np.log10(signal)
-#         if method == 'None': signal_norm = signal
-#         return signal_norm
-
-#     def inverse1d(self, signal, method):
-#         """This function inverses the normilization of a signal. Be careful to use the same method as the one you used to normalize the signal"""
-#         if method == 'min_max': signal_denorm = signal*(self.max - self.min) + self.min
-#         if method == 'max_abs': signal_denorm = signal*np.abs(self.max)
-#         if method == 'z_normalization': signal_denorm = signal*self.std + self.mean
-#         if method == 'robust_scaling': signal_denorm = signal*(self.Q3 - self.Q1) + self.Q2
-#         if method == 'decimal_scaling': signal_denorm = signal * (10**(-self.decimal_scale))
-#         if method == 'log_normalization': signal_denorm = 10**(signal)
-#         if method == 'None': signal_denorm= signal
-#         return signal_denorm
-    
-#     def fit_transform1d(self, signal, method):
-#         """This function fits and scales a one dimensional time-series at once"""
-#         self.fit1d(signal, method)
-#         # if self.std == 0: print('!!! std is zero'); print(signal)
-#         # if self.std == np.NaN: print('!!! std is NaN')
-#         signal_norm = self.normalize1d(signal, method)
-#         return signal_norm
-
-#     def normalize2d(self, data, method):
-#         """This function fits and scales a two dimensional time-series sample by sample (i.e. row by row)"""
-#         for idx in np.arange(data.shape[0]):
-#             data[idx,:] = self.fit_transform1d(data[idx,:], method)
-#         # the normalization parameters would remain in the last sample, so they are initialized to NaN
-#         self.mean, self.std, self.min, self.max, self.Q1, self.Q2, self.Q3 = np.NaN, np.NaN, np.NaN, np.NaN, np.NaN, np.NaN, np.NaN
-#         return data
-     
-#     def fit2d (self, data):
-#         """This function extract common parameters for a set of time-series. The assumption behind the process is that the means of individual parameters of all the time-series
-#         might be better reflecting the whole sample of time series, so they might be more suitable for normilizing individual time-series of the sample"""
-#         idx=0
-#         norm_params = np.array([data[idx,:].mean(), data[idx,:].std(), data[idx,:].min(), data[idx,:].max(), np.quantile(data[idx,:], 0.25), 
-#                     np.median(data[idx,:]), np.quantile(data[idx,:], 0.75)])
-#         for idx in np.arange(1,data.shape[0]):
-#             i_params = np.array([data[idx,:].mean(), data[idx,:].std(), data[idx,:].min(), data[idx,:].max(), np.quantile(data[idx,:], 0.25), 
-#                     np.median(data[idx,:]), np.quantile(data[idx,:], 0.75)])
-#             norm_params = np.vstack((norm_params, i_params))
-#         mean_norm_params = np.mean(norm_params, axis=0)
-#         self.mean, self.std, self.min, self.max, self.Q1, self.Q2, self.Q3 = tuple(mean_norm_params)
-
-#     def normalize3d(self, data, method):
-#         """This function normalizes data only to the last dimension (like the nn.LayerNorm does but only for 3 dimansional arrays). The reason for this is because LSTM
-#         inputs are in 3 dimension, so are the batches"""
-#         for idx in np.arange(data.shape[0]):
-#             data[idx,:,:] = self.normalize2d(data[idx,:,:], method)
-#         return data
-
-
-
-
 class lfp_scaler:
     ### This class is an objects that scales/normalizes the signal
     ### αυτή η κλάσση δεν περιέχει inverse2d και inverse3d επειδή τα test input και test output του LSTM θα είναι μονοδιάστατα σήματα (βεβαία αν είχε inverse2d και inverse3d
@@ -845,7 +683,7 @@ class lfp_scaler:
         if self.scaling_method == 'robust_scaling': signal_denorm = signal*(self.Q3 - self.Q1) + self.Q2
         if self.scaling_method == 'decimal_scaling': signal_denorm = signal * np.array(10**(-self.decimal_scale), dtype=signal.dtype)
         if self.scaling_method == 'log_normalization': signal_denorm = np.array(10**(signal), dtype=signal.dtype)
-        if self.scaling_method == 'None': signal_denorm= signal
+        if self.scaling_method == 'None': signal_denorm = signal
         return signal_denorm
     
     def fit_transform1d(self, signal:np.ndarray):
@@ -895,14 +733,14 @@ if  __name__ == "__main__":
     # # np.save('D:/Files/peirama_dipl/project_files/test_series_ds'+ str(downsample_scale)  + '.npy', array)
 
 
-    # tag = 'All_after_EA_WT_0Mg'
-    # downsample_scale = 100
-    # extract_data(tag, downsample_scale, 'D:/Files/peirama_dipl/project_files/LSTM_fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy') # create training data
+    tag = 'WT1'
+    downsample_scale = 1000
+    extract_data(tag, downsample_scale, 'D:/Files/peirama_dipl/project_files/LSTM_fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy') # create training data
     
     
-    downsampling = 1
-    time_ser = combine (lists_of_names('WT1'), downsampling)
-    check_signal_chars(time_ser, 'None', downsampling, check_basic_stats=1, check_time_chars=1, check_stat_diagrams=1, check_normality=1)
+    # downsampling = 1
+    # time_ser = combine (lists_of_names('WT1'), downsampling)
+    # check_signal_chars(time_ser, 'None', downsampling, check_basic_stats=1, check_time_chars=1, check_stat_diagrams=1, check_normality=1)
 
     # name = 'WT1_1in6'
     # downsampling = 10

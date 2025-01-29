@@ -1,7 +1,6 @@
 """This file uses an LSTM-RNN for the forecasting of the LFP signal"""
 
 import os
-import random
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,12 +8,9 @@ import time
 import pickle
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import signal_handler
-torch.backends.cudnn.benchmark = True # added for the -> cuDNN error: CUDNN_STATUS_NOT_SUPPORTED.This error may appear if you passed in a non-contiguous input
 
-from sklearn import model_selection
 import sklearn.linear_model as lrm
 from sklearn.dummy import DummyRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
@@ -24,82 +20,66 @@ import scipy.signal as sn
 import colorednoise as cn
 
 #------------------------------------------------------------------------------------------------------------------------------------------------------------
-# Παραλαγές της εκπαίδευσης οι οποίες μάλλον ΔΕ θα κρατηθούν στον τελικό κώδικα (GLOBAL VARIABLES)
+# GLOBAL VARIABLES
 
 remote_PC = False
 if not(remote_PC): PATH = 'D:/Files/peirama_dipl/' # my PC path
 if remote_PC: PATH = '/home/skoutinos/' # remote PC path
 
-save_main_output_to_file = True
+execute = 'main()' # options: main() , 'multiple_trainings'
+save_terminal_output_to_file = False
+save_plots = False
 
-run_to_gpu_all = 0 # στέλνει όλα τα δεδομένα στη gpu πριν την εκπαίδευση, !!!!!! ΠΡΟΣΟΧΗ!! όπως έχεις γράψει τον κώδικα αν στείλεις όλα τα δεδομένα στη gpu τότε το normalization θα γίνει στη gpu που παίρνει πάρα πολύ χρόνο. Δες το training loop για να το καταλάβεις.
-run_to_gpu_batch = 0 # στέλνει τα δεδομένα στη gpu ανά batch επειδή δε χωράνε όλα με τη μία στην gpu
-if run_to_gpu_all or run_to_gpu_batch : device = 'cuda' if torch.cuda.is_available() else 'cpu'
-if run_to_gpu_all or run_to_gpu_batch : print(torch.cuda.get_device_name())
+move_to_gpu_list = ['None', 'all', 'batches'] # 'None'-> training is done in the cpu, 'all'-> all data are being moved in gpu at once, 'batches'-> data are move to gpu one batch at a time
+move_to_gpu = move_to_gpu_list[1]
+if move_to_gpu != 'None': device = 'cuda' if torch.cuda.is_available() else 'cpu'
+if move_to_gpu != 'None': print(torch.cuda.get_device_name())
 
-fc_move_by_one = 0 # generates the same number of points but moved by one position -> e.g. takes a 100 points and forecasts the last 99 points and 1 new point
-only_last_seq = True # only_last_seq = False, works better with fc_move_by_one = True
+optimizer_used = 'adam' # cetermines the optimizer used for lstm training. Two options are 'adam' & 'sgd'
+loss_function_used_list = ['mse', 'mae', 'huber']
+loss_function_used = loss_function_used_list[0]
 
-bidirectional = True # Καλύτερα να μη χρησιμοποιήσεις bidirectional stacked LSTM's. Η πολυπλοκότητα αυξάνεται πάρα πολύ, χωρίς βέβαιο όφελος. Βέβαια ο κώδικας δουλεύει και για το συνδιασμό τους.
-
-## 4 επιλογές για scaling 
-# 1) κάνεις  scaling όλα τα σήματα lfp σρην αρχή πριν τα κόψεις σε παράθυρα 
-# 2) κάνεις scaling τα batches πριν εισαχθούν στην εκπαίδευση (input batches και output batches) [άρα και στο validation]
-# 3) κάνεις scaling τα μόνο τα input batches πριν εισαχθούν στην εκπαίδευση [άρα και στο validation]
-# 3) κάνεις layer normalization των input batches μέσα στο LSTM, και δεν κάνεις normalization στα output batch (θα μπορούσες να κάνεις χωριστό normalization στο output batch)
-# 4) Δεν κάνεις καθόλου scaling στα δεδομένα
-# το normalization υπάρχει συνολικά σε 5 μεθόδους: prepare data, train lstm loop, generate lstm, train older methods, generate older methods
-scalling_manner_list = ['norm_whole_files', 'norm_windows_before_split', 'norm_windows_after_split', 'input_layer_norm', 'No scaling']
-# scalling_manner_list = ['norm_all_data', 'norm_batches', 'norm_only_input_batches', 'input_layer_norm_no_output_norm', 'No scaling']
-scalling_manner = scalling_manner_list[1]
-
+tf_like_output = False # If true the tearget data will be same as the input data, bat one time step ahead e.g. input = x1,x2,...x10, ouput = x2,x3,...x11. This is used in teacher forcing taining
+lstm_seq_type = 'seq2one' # Determines if LSTM will use only the last ouput, or all of the outputs as it unrolls. Choises are 'seq2seq' or 'seq2one'
+bidirectional = True # determines if the LSTM will be bidirectional or not
 
 #------------------------------------------------------------------------------------------------------------------------------------------------------------
 #------------------------------------------------------------------------------------------------------------------------------------------------------------
-def main(): # -> η main function δεν είναι τελική . Ειδικά τα τελευταία της κομμάτια είναι παραδείγματα ενδεικτικά στατιστικής σύγκρισης και οπτικοποιησής και μπορεί να χρησιμοποιήσεις διαφορετικες συγκρίσεις εν τέλει
+
+def main():
+
+    ###### DATA PARAMETERS
     tag= 'All_WT_0Mg' # All_EA_WT_0Mg' #'All_WT_0Mg'   # determines which groups of files will be loaded, and used for training
-    only_EA = 0
-    tag_ml_methods = tag # for the training of older methods that use a subset of whole training data
-    downsample_scale = 100 # determines how many time will the signal be downsampled
-    sliding_window_step = 10 # this is the number of the window sliding for the creation of the windows that will be used for training
-    sliding_window_step_ml_methods = 50 # for the training of older methods that use a subset of whole training data
-
+    downsample_scale = 1000 # determines how many time will the signal be downsampled
+    sliding_window_step = 100 # this is the number of the window sliding for the creation of the windows that will be used for training
+    
+    sliding_window_step_ml_methods = 50 # for the training of older methods that use a subset of whole training data by taking a bigger sliding window
     scaling_method_list = ['min_max', 'max_abs', 'z_normalization', 'robust_scaling', 'decimal_scaling', 'log_normalization', 'None']
-    scaling_method = scaling_method_list[4]
-
-    input_size = 100 # this is the number of the input_data of the LSTM, i.e. the number of points used for forecasting
-    # sliding_window_step = input_size # for not overlaping windows
-    hidden_state_dim = 7 # the size of the hidden/cell state of LSTM
-    num_layers = 1 # the number of consecutive LSTM cells the nn.LSTM will have (i.e. number of stacked LSTM's)
-    output_size = 30 # this is the number of output_data of the LSTM, i.e. the future points forecasted by the LSTM
-    if fc_move_by_one: input_size = 500 
-    if fc_move_by_one: output_size = input_size # με πρόβλεψη επόμενων σημείων πλήθους ίσου με το input, μετατοπισμένων κατά μία θέση
-    batch_size = 1024 # how many rows each batch will have. 1 is the minimum and creates the max number of batches but they are the smallest in terms of size
-    epochs = 2
-    lr = 0.1 # optimizer's learning rate
-    momentum = 0.9 # optimizer's momentum -> for SGD, not for Adam (Adam has inherent momentum)
+    scaling_method = scaling_method_list[2]
 
     extract_data = 0 # if it is True the data are being extracted by .mat files and are being saved in a .npy file, if it is False data are being loaded from the .npy file
     if remote_PC: extract_data = False
-    train_LSTM = 0 # for True it trains the model, for False it loads a saved model # ΠΡΟΣΟΧΗ αν κάνεις load μοντέλο που το έχεις εκπαιδεύσει με άλλο output_type προφανώς θα προκύψει σφάλμα -> επιλύθηκε με την αποθήκευση και τη φόρτωση των παραμέτρων μαζί με το LSTM
-    load_lstm = 1
-    train_older = 1 # trains linear (autoregresson) and dummy regresson
-    load_older = 0
-    save_load_model_number = 9 # καθορίζει ποιο LSTM μοντέλο θα φορτωθεί (η αποθήκευση γίνεται στο φάκελο και τα μεταφέρεις manually στους φακέλους model)
 
+    ##### TRAINING PARAMETERS
+    input_size = 100 # this is the number of the input_data of the LSTM, i.e. the number of points used for forecasting
+    output_size = 30 # this is the number of output_data of the LSTM, i.e. the future points forecasted by the LSTM
+    if tf_like_output: output_size = input_size # με πρόβλεψη επόμενων σημείων πλήθους ίσου με το input, μετατοπισμένων κατά μία θέση
+    # sliding_window_step = input_size # for not overlaping windows
+    hidden_state_dim = 7 # the size of the hidden/cell state of LSTM
+    num_layers = 1 # the number of consecutive LSTM cells the nn.LSTM will have (i.e. number of stacked LSTM's)
+    lr = 0.1 # optimizer's learning rate
+    momentum = 0.9 # optimizer's momentum -> for SGD, not for Adam (Adam has inherent momentum)
+    epochs = 2
+    batch_size = 1024 # how many rows each batch will have. 1 is the minimum and creates the max number of batches but they are the smallest in terms of size
     
+    ##### TRAIN_SWITCH PARAMETERS
+    train_LSTM = 1 # for True it trains the model, for False it loads a saved model # ΠΡΟΣΟΧΗ αν κάνεις load μοντέλο που το έχεις εκπαιδεύσει με άλλο output_type προφανώς θα προκύψει σφάλμα -> επιλύθηκε με την αποθήκευση και τη φόρτωση των παραμέτρων μαζί με το LSTM
+    load_lstm = 0
+    train_older = 0 # trains linear (autoregresson) and dummy regresson
+    load_older = 0
+    save_load_model_number = 0 # καθορίζει ποιο LSTM μοντέλο θα φορτωθεί (η αποθήκευση γίνεται στο φάκελο και τα μεταφέρεις manually στους φακέλους model)
+    evaluate_models = 0
 
-    ## Warnings
-    if run_to_gpu_all and (scaling_method in ['norm_batches', 'norm_only_input_batches', 'input_layer_norm_no_output_norm']): 
-        print ('ΠΡΟΣΟΧΗ! Σε αυτή την περίπτωση η κανονικοποίηση τρέχει στη gpu που είναι πολύ αργη. Δεν πρέπει να κανονικοποιούνται δεδομάνα αφού μεταφερθούν στη GPU')
-    if scaling_method in ['max_abs','log_normalization']: print('Αυτοί οι μετασχηματισμοί κανονικοποίησης δε λειτουργούν καλά στο σήμα, έχουν μείνει μόνο για ιστορικούς λόγους')
-    # if scaling_method in ['min_max', 'z_normalization', 'robust_scaling'] and scalling_manner in ['norm_all_data', 'norm_batches']: # δεν ήθελα να αποκανονικοποιώ τα output είναι αναξιόπιστη μέθοδος
-        # print('Αυτές οι μέθοδοι κανονικοποιούν τα batches στο validation με παραμέτρους που είναι λίγο αυθαιρετες, οπότε τα val scores είναι κανονικοποιημένα και δεν είναι τελείως αξιόπιστα')
-        # αλλά η loss δεν πρέπει να είναι σχετικά κανονικοποιημένη για να μειώνεται πιο γρήγορα;;;
-    if scalling_manner in ['norm_whole_files']: print('Έδω ένα μικρό σφάλμα είναι ότι τα δεδομένα κανονκοποιούνται με mean, std, median από όλο το σήμα, ακόμα και από το μέλλον που θα πρέπει να προβλέψουν. Αλλά η επίδραση είναι μάλλον αμελητέα')
-    if scalling_manner == 'norm_windows_after_split' and output_size == 1: 
-        print("Ο κώδικας δε θα δουλέψει. Θα προκύψει σφάλμα επειδή δε γίνεται να κανονικοποιηθει μόνο 1 αριθμός που είναι τα outputs")
-        quit()
 
     # Extract and save data for training and validation
     if extract_data:
@@ -108,12 +88,12 @@ def main(): # -> η main function δεν είναι τελική . Ειδικά 
         print('Extracted/Loaded data have shape:', lfp_data.shape) # πρόκειται για αρχεία (καταγραφές LFP) 20 λεπτων. Οι γραμμές είναι ο αριθμός των καταγραφών και οι στήλες είναι το μήκος των καταγραφών
 
    # train or load LSTM 
-    if train_LSTM:
-        lstm_model, _ = LSTM_train(tag, downsample_scale, sliding_window_step, hidden_state_dim, input_size, output_size, num_layers, batch_size, lr, momentum, epochs, scaling_method, save_load_model_number)
+    if train_LSTM: lstm_model, _ = LSTM_train(tag, downsample_scale, sliding_window_step, hidden_state_dim, input_size, output_size, num_layers, batch_size, lr, momentum, epochs, scaling_method, save_load_model_number)
     if load_lstm:
         dict_train = load_params(save_load_model_number)
         input_size, hidden_state_dim, num_layers, output_size = dict_train['input_size'], dict_train['hidden_state_dim'], dict_train['num_layers'], dict_train['output_size'] # # φορτώνει τις παραμέτρους του loaded LSTM. Αυτές οι παράμετροι χρειάζονται για το loading του LSTM
         downsample_scale, scaling_method = dict_train['downsample_scale'], dict_train['scaling_method'] # φορτώνει τις παραμέτρους του loaded LSTM. Αυτές οι παράμετροι χρειάζονται για το generate/compare
+        tag = dict_train['tag'] # αυτή η παράμετρος χρειάζεται για την εκπαίδευση των άλλων μεθόδων στα ίδια δεδομένα με αυτά της εκπαίδευσης του LSTM
         lstm_model = LSTM_load(save_load_model_number, input_size, hidden_state_dim, num_layers, output_size)
 
     visualize = False
@@ -124,106 +104,81 @@ def main(): # -> η main function δεν είναι τελική . Ειδικά 
         forecasted = lstm_model(input_tensor) # input must be dims (batch_size, sequence_length, input_size=1)
         torch.onnx.export(lstm_model, (input_tensor,), PATH + 'project_files/' + 'lstm_model.onnx', input_names=["input"])
 
-
-
-    # asses underfiiting/overfitting by inspecting how LSTM performs on data, previously seen during training
+    # asseses underfiiting/overfitting by inspecting how LSTM performs on data, previously seen during training
     if train_LSTM or load_lstm:
         print('\nLoad previously seen data in order to check underfiiting/overfitting')
-        if not(remote_PC) and not(only_EA): check_series = signal_handler.combine (signal_handler.lists_of_names('WT1'), downsample_scale) # το τεστ είναι ένα ολόκληρο σήμα, ώστε διαφορετικά starting points να ελέγξουν το forecasting σε όλες τις καταστάσεις (EA, IA, SLA)
-        if remote_PC and not(only_EA): check_series = np.load(PATH + 'project_files/WT1_ds'+ str(downsample_scale)  + '.npy') # for remote pc
-        if not(remote_PC) and only_EA: check_series = signal_handler.time_series('WT1_1in6', downsample_scale)
-        if remote_PC and only_EA: check_series = np.load(PATH + 'project_files/WT1_EA_ds'+ str(downsample_scale)  + '.npy') # for remote pc
-        print('length of test series is ', check_series.shape)
+        if not(remote_PC): check_series = signal_handler.combine (signal_handler.lists_of_names('WT1'), downsample_scale) # το τεστ είναι ένα ολόκληρο σήμα, ώστε διαφορετικά starting points να ελέγξουν το forecasting σε όλες τις καταστάσεις (EA, IA, SLA)
+        if remote_PC: check_series = np.load(PATH + 'project_files/WT1_ds'+ str(downsample_scale)  + '.npy') # for remote pc
+        print('length of check series is ', check_series.shape)
         num_gen_points = output_size #3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
         if output_size < 5: num_gen_points = 150 # για την περίπτωση που το ouput είναι πολύ μικρό
-        number_of_starting_points = 100 # 32000 # καθορίζει πόσα τυχαία σημεία έναρξης της πρόβλεψης θα παρθούν για την παραγωγή των λιστών της κάθε μετρικής
-        make_barplots = True # False True
-        test_lstm(lstm_model, check_series, num_gen_points, number_of_starting_points, scaling_method, make_barplots)
+        number_of_starting_points = 40 # καθορίζει πόσα τυχαία σημεία έναρξης της πρόβλεψης θα παρθούν για την παραγωγή των λιστών της κάθε μετρικής
+        evaluate_lstm(lstm_model, check_series, num_gen_points, number_of_starting_points, scaling_method, make_barplots=True)
 
 
-    #train_LSTM = 0; load_lstm = 0 # αυτό μπήκε απλά για να μην τρέχει ο πιο κάτω κώδικας που παίρνει έξτρα χρόνο
-    # test how good trained LSTM is, with testing data (not seen before during training)
-    if train_LSTM or load_lstm:
-        print('\nLoad test series in order to test trained or loaded LSTM')
-        if not(remote_PC): test_series = signal_handler.combine (signal_handler.lists_of_names('test'), downsample_scale) # το τεστ είναι ένα ολόκληρο σήμα, ώστε διαφορετικά starting points να ελέγξουν το forecasting σε όλες τις καταστάσεις (EA, IA, SLA)
-        if remote_PC: test_series = np.load(PATH + 'project_files/test_series_ds'+ str(downsample_scale)  + '.npy') # for remote pc
-        if only_EA and not(remote_PC): test_series = signal_handler.time_series('test1', downsample_scale)
-        if only_EA and remote_PC: test_series = np.load(PATH + 'project_files/test_series_EA_ds'+ str(downsample_scale)  + '.npy') # for remote pc
-        print('length of test series is ', test_series.shape)
-        num_gen_points = output_size #3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
-        if output_size < 5: num_gen_points = 150 # για την περίπτωση που το ouput είναι πολύ μικρό
-        number_of_starting_points = 10 #32000 # καθορίζει πόσα τυχαία σημεία έναρξης της πρόβλεψης θα παρθούν για την παραγωγή των λιστών της κάθε μετρικής
-        make_barplots = True # False True
-        #test_lstm(lstm_model, test_series, num_gen_points, number_of_starting_points, scaling_method, make_barplots)
 
 
     # train linear and dummy regressors with the same data
-    linear_save_name = 'linear_fc_model'
     dummy_save_name = 'dummy_fc_model' #'None'
+    linear_save_name = 'linear_fc_model'
     if train_older:
-        linear = train_older_methods('linear', tag_ml_methods, downsample_scale, scaling_method, input_size, output_size, sliding_window_step_ml_methods, batch_size, model_save_name=linear_save_name)
-        dummy = train_older_methods('dummy', tag_ml_methods, downsample_scale, scaling_method, input_size, output_size, sliding_window_step_ml_methods, batch_size, model_save_name=dummy_save_name)
+        dummy = train_older_methods('dummy', tag, downsample_scale, scaling_method, input_size, output_size, sliding_window_step_ml_methods, model_save_name=dummy_save_name)
+        linear = train_older_methods('linear', tag, downsample_scale, scaling_method, input_size, output_size, sliding_window_step_ml_methods, model_save_name=linear_save_name)
     if load_older:
-        with open(PATH + 'project_files/' + linear_save_name + '.pkl', 'rb') as file: linear = pickle.load(file)
         with open(PATH + 'project_files/' + dummy_save_name + '.pkl', 'rb') as file: dummy = pickle.load(file)
+        with open(PATH + 'project_files/' + linear_save_name + '.pkl', 'rb') as file: linear = pickle.load(file)
     
-    
-    # # load test series in order to test and compare the trained algorithms -> έχουν κληθεί πιο πάνω στο testing του LSTM, αλλά αν θέλεις περισσότερα testing δεδομένα για αυτό το βήμα πρέπει να τα ξανακαλέσεις
-    # # μπορείς να προσθέσεις περισσότερες από μια testing χρονοσειρές, για ακόμα μεγαλύτερη στατιστική γενικευσιμότητα των αποτελεσμάτων
-    # print('\nLoad test series in order to test and compare the trained algorithms')
-    # test_series = signal_handler.combine (signal_handler.lists_of_names('test'), downsample_scale) # το τεστ είναι ένα ολόκληρο σήμα, ώστε διαφορετικά starting points να ελέγξουν το forecasting σε όλες τις καταστάσεις (EA, IA, SLA)
-    # if remote_PC: test_series = np.load(PATH + 'project_files/test_series_ds'+ str(downsample_scale)  + '.npy') # for remote pc
-    # print('length of test series is ', test_series.shape); print('\n\n')
+        
 
-    # compare statisticaly different methods
-    if ((train_LSTM or load_lstm) and (train_older or load_older)):
-        for metric_used in ['MAE', 'norm-cross-corr', 'RMS-PSD']:
-            print('\n')
-            number_of_st_points = 100 # καθορίζει πόσα τυχαία σημεία έναρξης της πρόβλεψης θα παρθούν για τη στατιστική σύγκριση των μεθόδων
-            num_gen_points = output_size # 3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
-            if output_size < 5: num_gen_points = 150 # για την περίπτωση που το ouput είναι πολύ μικρό
-            print('COMPARISON OF LSTM FORECASTING WITH AUTOREGRESSIC FORECASTING')
-            #metric_used = 'MAE' #'MAE' 'norm-cross-corr' 'RMS-PSD'
-            print('Metric used: ' + metric_used)
-            lstm_MAE_list, linear_MAE_list = produce_metric_samples(test_series, lstm_model, linear, number_of_st_points, num_gen_points, scaling_method, metric=metric_used)
-            statistical_comparison(lstm_MAE_list, linear_MAE_list, normality_test ='SW', comparing_name = 'Autoregressive', metric_name=metric_used, plot_visuals=False)
-            print('\n')
-            print('COMPARISON OF LSTM FORECASTING WITH DUMMY REGRESSOR')
-            print('Metric used: ' + metric_used)
-            lstm_MAE_list, dummy_MAE_list = produce_metric_samples(test_series, lstm_model, dummy, number_of_st_points, num_gen_points, scaling_method, metric=metric_used)
-            statistical_comparison(lstm_MAE_list, dummy_MAE_list, normality_test ='SW', comparing_name = 'Dummy-regressor', metric_name=metric_used, plot_visuals=False)
-            print('\n')
-            print('COMPARISON OF LSTM FORECASTING WITH PINK NOISE')
-            print('Metric used: ' + metric_used)
-            lstm_MAE_list, noise_MAE_list = produce_metric_samples(test_series, lstm_model, 'pink_noise', number_of_st_points, num_gen_points, scaling_method, metric=metric_used)
-            statistical_comparison(lstm_MAE_list, noise_MAE_list, normality_test ='SW', comparing_name = 'pink noise', metric_name=metric_used, plot_visuals=False)
-            print('\n')
-
-        # visual presentations of forecasting
-        starting_point = np.random.randint(lstm_model.seq_len, test_series.shape[1]) # εδώ θα χρειαστεί μόλις ένα σημείο για visualization
-        num_gen_points = output_size #3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
+    if evaluate_models:
+        number_of_starting_points = 100 # 32000  καθορίζει πόσα τυχαία σημεία έναρξης της πρόβλεψης θα παρθούν για την παραγωγή των λιστών της κάθε μετρικής ή στατιστική σύγκριση των μεθόδων
+        num_gen_points = output_size # 3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
         if output_size < 5: num_gen_points = 150 # για την περίπτωση που το ouput είναι πολύ μικρό
-        test_signal = test_series[0,:]
-        #tensor_test_signal = torch.from_numpy(test_signal).clone().float()
-        fs = 1/(test_series[1,3] - test_series[1,2])
-        actual_signal = test_signal [starting_point : starting_point + num_gen_points]
-        lstm_gen_signal = lstm_generate_lfp(lstm_model, test_signal[:starting_point], num_gen_points, scaling_method, only_gen_signal=1)
-        print('Plot/compare LSTM-generated and actual signal in time and in frequency domain')
-        visual_fc_comparison(lstm_gen_signal, actual_signal, fs, domain = 'both')
-        linear_gen_signal = ml_generate_lfp(linear, test_signal[:starting_point], input_size, output_size, num_gen_points, scaling_method, only_generated = 1)
-        print('Plot/compare linear-generated and actual signal in time and in frequency domain')
-        visual_fc_comparison(linear_gen_signal, actual_signal, fs, domain ='both')
-        dummy_gen_signal = ml_generate_lfp(dummy, test_signal[:starting_point], input_size, output_size, num_gen_points, scaling_method, only_generated = 1)
-        print('Plot/compare dummy-generated and actual signal in time and in frequency domain')
-        visual_fc_comparison(dummy_gen_signal, actual_signal, fs, domain ='cross-correlation')
-        three_fold_visual_fc_comparison(actual_signal, fs, lstm_gen_signal, linear_gen_signal, ml_method1='LSTM', ml_method2='Autoregressive')
-        three_fold_visual_fc_comparison(actual_signal, fs, lstm_gen_signal, dummy_gen_signal, ml_method1='LSTM', ml_method2='Dummy-regressor')
-        noise = produce_noise (beta = 1, samples = actual_signal.shape, fs=fs, freq_range = [0.001, 200]) # the noise is filtered in the range of LFP -> [0,200] Hz
-        gen_noise_signal = noise * (actual_signal.std()/noise.std()) # bring the noise to the same scale as the signal
-        three_fold_visual_fc_comparison(actual_signal, fs, lstm_gen_signal, gen_noise_signal, ml_method1='LSTM', ml_method2= 'pink noise')
+
+        # load testing data
+        print('\nLoad test series in order to test and compare the trained algorithms')
+        # το τεστ είναι ένα ολόκληρο σήμα, ώστε διαφορετικά starting points να ελέγξουν το forecasting σε όλες τις καταστάσεις (EA, IA, SLA)
+        # μπορείς να προσθέσεις περισσότερες από μια testing χρονοσειρές, για ακόμα μεγαλύτερη στατιστική γενικευσιμότητα των αποτελεσμάτων
+        if not(remote_PC): test_series = signal_handler.combine (signal_handler.lists_of_names('test'), downsample_scale) 
+        if remote_PC: test_series = np.load(PATH + 'project_files/test_series_ds'+ str(downsample_scale)  + '.npy') # for remote pc
+        print('length of test series is ', test_series.shape); print('\n\n')
+    
+        ## Evaluate LSTM forecasting effeciency
+        # μη χρησιμοποιήσεις τα δεδομένα του testing για να επιλέξεις καλύτερο μοντέλο. Το μοντέλο πρέπει να είναι τυφλό στα testing data και για αυτό οι μετρικές δεν μπαίνουν στο training_log
+        if train_LSTM or load_lstm: evaluate_lstm(lstm_model, test_series, num_gen_points, number_of_starting_points, scaling_method, make_barplots=True)
 
 
+        # compare statisticaly different methods
+        if ((train_LSTM or load_lstm) and (train_older or load_older)):
+            for metric_used in ['MAE', 'norm-cross-corr', 'RMS-PSD']:
+                # testing parameters
+                # test_series = signal_handler.combine (signal_handler.lists_of_names('test'), downsample_scale) # φορτώνεται πιο πάνω
+                
+                # LSTM - Dummy comparison
+                lstm_MAE_list, dummy_MAE_list = produce_metric_samples(test_series, lstm_model, dummy, number_of_starting_points, num_gen_points, scaling_method, metric=metric_used)
+                statistical_comparison(lstm_MAE_list, dummy_MAE_list, normality_test ='SW', comparing_name = 'Dummy-regressor', metric_name=metric_used, plot_visuals=False)
+                # LSTM - Linear comparison
+                lstm_MAE_list, linear_MAE_list = produce_metric_samples(test_series, lstm_model, linear, number_of_starting_points, num_gen_points, scaling_method, metric=metric_used)
+                statistical_comparison(lstm_MAE_list, linear_MAE_list, normality_test ='SW', comparing_name = 'Autoregressive', metric_name=metric_used, plot_visuals=False)
+                # LSTM - pink noise comparison
+                lstm_MAE_list, noise_MAE_list = produce_metric_samples(test_series, lstm_model, 'pink_noise', number_of_starting_points, num_gen_points, scaling_method, metric=metric_used)
+                statistical_comparison(lstm_MAE_list, noise_MAE_list, normality_test ='SW', comparing_name = 'pink noise', metric_name=metric_used, plot_visuals=False)
 
+            # visual presentations of forecasting
+            starting_point = np.random.randint(lstm_model.seq_len, test_series.shape[1]) # εδώ θα χρειαστεί μόλις ένα σημείο για visualization
+            num_gen_points = output_size #3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
+            if output_size < 5: num_gen_points = 150 # για την περίπτωση που το ouput είναι πολύ μικρό
+            test_signal = test_series[0,:]
+            fs = 1/(test_series[1,3] - test_series[1,2])
+            actual_signal = test_signal [starting_point : starting_point + num_gen_points]
+            lstm_gen_signal = lstm_generate_lfp(lstm_model, test_signal[:starting_point], num_gen_points, scaling_method, only_gen_signal=1)
+            linear_gen_signal = ml_generate_lfp(linear, test_signal[:starting_point], input_size, output_size, num_gen_points, scaling_method, only_generated = 1)
+            dummy_gen_signal = ml_generate_lfp(dummy, test_signal[:starting_point], input_size, output_size, num_gen_points, scaling_method, only_generated = 1)
+            noise = produce_noise (beta = 1, samples = actual_signal.shape, fs=fs, freq_range = [0.001, 200]) # the noise is filtered in the range of LFP -> [0,200] Hz
+            gen_noise_signal = noise * (actual_signal.std()/noise.std()) # bring the noise to the same scale as the signal
+            visual_fc_comparison(actual_signal, fs, lstm_gen_signal, ml_method1='LSTM', domain='both', gen_signal2=linear_gen_signal, ml_method2='Autoregressive')
+            visual_fc_comparison(actual_signal, fs, lstm_gen_signal, ml_method1='LSTM', domain='both', gen_signal2=dummy_gen_signal, ml_method2='Dummy-regressor')
+            visual_fc_comparison(actual_signal, fs, lstm_gen_signal, ml_method1='LSTM', domain='both', gen_signal2=gen_noise_signal, ml_method2='pink noise')
 #------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 #------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -242,145 +197,73 @@ def LSTM_train(tag, downsample_scale, sliding_window_step, hidden_state_dim, inp
         else:
             save_load_model_number = save_load_model_number + 1
 
-    
-    # Import data
+    # Import & prepare data
     save_load_path = PATH + 'project_files/fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy'
     lfp_data = np.load(save_load_path)
     print('Extracted/Loaded data have shape:', lfp_data.shape) # πρόκειται για αρχεία (καταγραφές LFP) 20 λεπτων. Οι γραμμές είναι ο αριθμός των καταγραφών και οι στήλες είναι το μήκος των καταγραφών
-
-    # prepare data
-    train_loader, val_loader, _  = prepare_data2(lfp_data, input_size, output_size, sliding_window_step, batch_size, scaling_method)
-    print('Data have been prepared')
+    train_loader, val_loader, _  = prepare_data(lfp_data, input_size, output_size, sliding_window_step, scaling_method, batch_size=batch_size)
+    print('Data loaders have been prepared')
 
     ## NN instance creation
     lstm_model_init = LSTM_fc(input_size, hidden_state_dim, num_layers, output_size)
-    criterion = nn.MSELoss()
-    # criterion = norm_cross_cor_loss()
-    # optimizer = optim.SGD(lstm_model_init.parameters(), lr, momentum)
-    optimizer = optim.Adam(lstm_model_init.parameters(), lr)
-    # optimizer = optim.LBFGS(lstm_model.parameters(), lr) # for it to work u have to craete a closure function. See pytorch documentation fo more info
+    if loss_function_used=='mse': criterion = nn.MSELoss()
+    if loss_function_used=='mae': criterion = nn.L1Loss()
+    if loss_function_used=='huber': criterion = nn.HuberLoss()
+    if optimizer_used=='sgd': optimizer = optim.SGD(lstm_model_init.parameters(), lr, momentum)
+    if optimizer_used=='adam': optimizer = optim.Adam(lstm_model_init.parameters(), lr)
 
-    # # try forward method with a (εχεις φτιάξει ένα LSTM που παίρνει ένα τενσορα fc_num στοιχείων και επιστρέφει ένα τενσορα 1 στοιχείου
-    # a=np.linspace(0,1,input_size); a=torch.tensor(a, dtype=torch.float32); 
-    # a=torch.unsqueeze(a,1); 
-    # a=torch.unsqueeze(a,0); print(a.shape)
-    # arr = lstm_model_init(a) # input must be dims (batch_size, sequence_length, input_size=1)
+    # # try forward method
+    # a=np.ones((14,input_size,1)); a=torch.tensor(a, dtype=torch.float32); print(a.shape); 
+    # arr = lstm_model_init(a) # input must be dims (batch_size, sequence_length, input_size=1) 
     # print('arr output shape is', arr.shape); print(arr)
 
     # train lstm and save it
-    if run_to_gpu_all or run_to_gpu_batch : lstm_model_init = lstm_model_init.to(device)
-    lstm_model, training_string, model_val_score = training_lstm_loop(lstm_model_init, criterion, optimizer, epochs, train_loader, val_loader, scaling_method, save_load_model_number, measure_train_time=True) 
+    if move_to_gpu != 'None': lstm_model_init = lstm_model_init.to(device)
+    lstm_model, training_string, model_val_score = training_lstm_loop(lstm_model_init, criterion, optimizer, epochs, train_loader, val_loader, save_load_model_number) 
     create_training_report(downsample_scale, hidden_state_dim, num_layers, batch_size, lr, momentum, sliding_window_step, scaling_method, tag, input_size, output_size, training_string, save_load_model_number)
-    save_params(downsample_scale, hidden_state_dim, num_layers, batch_size, lr, sliding_window_step, scaling_method, tag, input_size, output_size, training_string, save_load_model_number)
-
+    save_params(tag, downsample_scale, scaling_method, input_size, output_size, hidden_state_dim, num_layers, batch_size, lr, sliding_window_step, training_string, save_load_model_number)
     return lstm_model, model_val_score
 
 #--------------------------------------------------------------------------------------------
 
-### deprecated because of new LSTM-input order
-### data preparation
-# def prepare_data(lfp_data_matrix, input_size, output_size, window_step, batch_size, scaling_method, cut_with_numpy=False, return_loaders=True):
-#     """This function prepares the data (i.e. normalizes, divide long signals, creates windowed data, wraps them into loaders) and returs the train_loader and val_loader 
-#     objects that will be used to feed the batces in the LSTM during the training loop"""
-
-#     # scaling_data
-#     scaler = signal_handler.lfp_scaler(scaling_method, scaling_power=4)
-#     if scalling_manner == 'norm_all_data':
-#         lfp_data_matrix = scaler.normalize2d(lfp_data_matrix) # κανονικοποιεί το σήμα
-#         scaler.fit2d(lfp_data_matrix) # εξάγει κοινές παραμέτρους κανονικοποίησης για όλο το σήμα
-
-#     # Δημιουργία παραπάνω batches
-#     if lfp_data_matrix.shape[1]>10**6: # κόβει τα σήματα και φτιάχνει νέα batches για να επιλύσει πορβλήματα μνήμης. Μπορείς να το κάνεις και συνάρτηση
-#         batch_multiplier = 10 # θα κόψει κάθε σήμα τόσες φορές και θα δημιοργήσει τόσα νέα batches για κάθε σήμα
-#         new_cutted_length = lfp_data_matrix.shape[1] - (lfp_data_matrix.shape[1] % batch_multiplier) 
-#         lfp_data_matrix = lfp_data_matrix[:, 0:new_cutted_length] # κόβω τα τελευταία στοιχεία για να είναι διαιρέσιμο με το 10 (ή γεντικότερα με το batch_multiplier)
-#         lfp_data_split = np.hsplit(lfp_data_matrix, batch_multiplier)
-#         lfp_data_matrix= np.vstack(lfp_data_split)
-#         print('After batch multiplication lfp_data have shape: ', lfp_data_matrix.shape)
-
-#     window_size = input_size + output_size
-
-#     # παρακάτω οι variables data, windowed_data, input_data, target_data, dataset, train_data, val_data, train_loader, val_loader είναι views και έτσι μαλλον δεν
-#     # καταλαμβάνουν επιπρόσθετη μνήμη
-
-#     # Δημιουργία δεδομένων εκπαίδευσης με κόψιμο τους σε παράθυρα όπου κάθε παράθυρο περιλαμβάνει τα target_data και input_data μιας forecasting δοκιμής/εκπαίδευσης
-#     if cut_with_numpy: # το cut with numpy είναι τεχνικά άχρηστο αλλά το κρατάς για ιστορικούς λόγους σαν άλλη μέθοδο δημιουργίας παραθύρων
-#         windowed_data = np.lib.stride_tricks.sliding_window_view(lfp_data_matrix, window_size, axis=1, writeable=True)[:,::window_step,:]
-#         if fc_move_by_one: windowed_data = np.lib.stride_tricks.sliding_window_view(lfp_data_matrix, input_size + 1, axis=1, writeable=True)[:,::window_step,:]
-#         print('numpy windowed data are', windowed_data.shape)
-#         # windowed_data = torch.from_numpy(windowed_data).float() # με το που εκτελείς αυτή την εντολή, τα windows παύουν να είναι views του numpy και αυτό αυξάνει σημαντικά τις ανάγκες σε μνήμη. Αυτό είναι το πιο συχνό σημείο για Runtime errors
-#     if not(cut_with_numpy): # εδώ τα παράθυρα κόβονται αφού είναι tensors, οπότε παραμένουν views. Βέβαια ίσως να παύουν να είναι views όταν εισάγονται στους loaders -> όπως και να έχει δεν προκαλούνται προβλήματα μνήμης
-#         data = torch.from_numpy(lfp_data_matrix).float()
-#         windowed_data = data.unfold(dimension=1, size = window_size, step = window_step) 
-#         print('torch windowed data are', windowed_data.shape)
-#     input_data = windowed_data[:,:, 0:input_size]
-#     target_data = windowed_data[:,:,input_size:window_size]
-
-#     if not(return_loaders): return input_data, target_data, scaler
-#     if fc_move_by_one: target_data = windowed_data[:,:,1:output_size+1] # με πρόβλεψη επόμενων σημείων πλήθους ίσου με το input, μετατοπισμένων κατά μία θέση
-#     if run_to_gpu_all: input_data=input_data.to(device); target_data=target_data.to(device) # εδώ τα data σίγουρα παύουν να είναι views. Για αυτό πιο κάτω στο training μόνο σε αυτή την περίπτωση τα batches δεν αντιγράφονται
-#     dataset = torch.utils.data.TensorDataset(input_data, target_data); del input_data; del target_data
-#     train_data, val_data = torch.utils.data.dataset.random_split(dataset, [0.8, 0.2]); del dataset
-#     train_loader = torch.utils.data.DataLoader(dataset=train_data, batch_size=batch_size) # αν θέλεις να τρέξει όλα τα δεδομένα σε ένα batch, βάλε -> batch_size=train_data.__len__()
-#     val_loader = torch.utils.data.DataLoader(dataset=val_data, batch_size=batch_size) # αν θέλεις να τρέξει όλα τα δεδομένα σε ένα batch, βάλε -> batch_size=val_data.__len__()
-#     if return_loaders: return train_loader, val_loader, scaler
-
-def prepare_data2(lfp_data_matrix, input_size, output_size, window_step, batch_size, scaling_method, cut_with_numpy=False, return_loaders=True):
+def prepare_data(lfp_data_matrix, input_size, output_size, window_step, scaling_method, prepare_data_for_lstm=True, batch_size=1):
     """This function prepares the data (i.e. normalizes, divide long signals, creates windowed data, wraps them into loaders) and returs the train_loader and val_loader 
     objects that will be used to feed the batces in the LSTM during the training loop"""
 
-    # scaling_data
     scaler = signal_handler.lfp_scaler(scaling_method, scaling_power=4)
-    if scalling_manner == 'norm_whole_files':
-        lfp_data_matrix = scaler.normalize2d(lfp_data_matrix) # κανονικοποιεί το σήμα
-        scaler.fit2d(lfp_data_matrix) # εξάγει κοινές παραμέτρους κανονικοποίησης για όλο το σήμα
-
     window_size = input_size + output_size
 
     # Δημιουργία δεδομένων εκπαίδευσης με κόψιμο τους σε παράθυρα όπου κάθε παράθυρο περιλαμβάνει τα target_data και input_data μιας forecasting δοκιμής/εκπαίδευσης
-    if cut_with_numpy: # το cut with numpy είναι τεχνικά άχρηστο αλλά το κρατάς για ιστορικούς λόγους σαν άλλη μέθοδο δημιουργίας παραθύρων
+    if not(prepare_data_for_lstm):
         windowed_data = np.lib.stride_tricks.sliding_window_view(lfp_data_matrix, window_size, axis=1, writeable=True)[:,::window_step,:]
-        if fc_move_by_one: windowed_data = np.lib.stride_tricks.sliding_window_view(lfp_data_matrix, input_size + 1, axis=1, writeable=True)[:,::window_step,:]
-        windowed_data = np.reshape(windowed_data, (windowed_data.shape[0]*windowed_data.shape[1],window_size,1)) # πλέον με το reshape τα windows παύουν έτσι κι αλλιώς να είναι views
+        windowed_data = np.reshape(windowed_data, (windowed_data.shape[0]*windowed_data.shape[1],window_size)) # πλέον με το reshape τα windows παύουν έτσι κι αλλιώς να είναι views
         print('numpy windowed data are', windowed_data.shape)
-        windowed_data = torch.from_numpy(windowed_data).float() # με το που εκτελείς αυτή την εντολή, τα windows παύουν να είναι views του numpy και αυτό αυξάνει σημαντικά τις ανάγκες σε μνήμη. Αυτό είναι το πιο συχνό σημείο για Runtime errors
-    if not(cut_with_numpy): # εδώ τα παράθυρα κόβονται αφού είναι tensors, οπότε παραμένουν views. Βέβαια ίσως να παύουν να είναι views όταν εισάγονται στους loaders -> όπως και να έχει δεν προκαλούνται προβλήματα μνήμης
+        windowed_data  = scaler.normalize2d(windowed_data) # κανονικοποιεί τα input σειρά προς σειρά
+        input_data = windowed_data[:,0:input_size]
+        target_data = windowed_data[:,input_size:window_size]
+        return input_data, target_data, scaler
+
+    if prepare_data_for_lstm:  
         data = torch.from_numpy(lfp_data_matrix).float()
         windowed_data = data.unfold(dimension=1, size = window_size, step = window_step)
         # windowed_data = windowed_data.contiguous()
         # windowed_data = windowed_data.view((windowed_data.shape[0]*windowed_data.shape[1],window_size,1))
-        windowed_data = torch.reshape(windowed_data, (windowed_data.shape[0]*windowed_data.shape[1],window_size,1)) # πλέον με το reshape τα windows παύουν έτσι κι αλλιώς να είναι views
-        print('torch windowed data are', windowed_data.shape)
-    if scalling_manner == 'norm_windows_before_split':
-        if torch.is_tensor(windowed_data): windowed_data = windowed_data.numpy()
-        windowed_data = np.squeeze(windowed_data)
+        windowed_data = torch.reshape(windowed_data, (windowed_data.shape[0]*windowed_data.shape[1],window_size)) # πλέον με το reshape τα windows παύουν έτσι κι αλλιώς να είναι views
+        windowed_data = windowed_data.numpy()
         windowed_data  = scaler.normalize2d(windowed_data) # κανονικοποιεί τα input σειρά προς σειρά
         windowed_data = torch.from_numpy(windowed_data).float()
         windowed_data = torch.unsqueeze(windowed_data, 2)
-    input_data = windowed_data[:,0:input_size,:]
-    target_data = windowed_data[:,input_size:window_size,:]
+        print('torch windowed data are', windowed_data.shape)
+        input_data = windowed_data[:,0:input_size,:]
+        target_data = windowed_data[:,input_size:window_size,:]
 
-    # κανονικοποιεί χωριστά τα input και τα output, αλλά δε δουλεύει για output = 1. 
-    # θετικά: πιο σωστή μέθοδος επειδή τα input δεν εξαρτώνται από τα στατιστικά (maen, std etc.) των output. Αρνητικά λιγοτερο "ομαλή" κανονικοποίηση για μικρά output.
-    if scalling_manner == 'norm_windows_after_split': 
-        if torch.is_tensor(input_data): input_data = input_data.numpy()
-        if torch.is_tensor(target_data): target_data = target_data.numpy()
-        input_data = np.squeeze(input_data); target_data = np.squeeze(target_data)
-        input_data  = scaler.normalize2d(input_data) # κανονικοποιεί τα input σειρά προς σειρά
-        target_data  = scaler.normalize2d(target_data) # κανονικοποιεί τα target σειρά προς σειρά
-        input_data = torch.from_numpy(input_data).float()
-        target_data = torch.from_numpy(target_data).float()
-        input_data = torch.unsqueeze(input_data, 2)
-        target_data = torch.unsqueeze(target_data, 2)
-    
-    if not(return_loaders): return input_data, target_data, scaler
-    if fc_move_by_one: target_data = windowed_data[:,1:output_size+1,:] # με πρόβλεψη επόμενων σημείων πλήθους ίσου με το input, μετατοπισμένων κατά μία θέση
-    if run_to_gpu_all: input_data=input_data.to(device); target_data=target_data.to(device) # εδώ τα data σίγουρα παύουν να είναι views. Για αυτό πιο κάτω στο training μόνο σε αυτή την περίπτωση τα batches δεν αντιγράφονται
-    dataset = torch.utils.data.TensorDataset(input_data, target_data); del input_data; del target_data
-    train_data, val_data = torch.utils.data.dataset.random_split(dataset, [0.8, 0.2]); del dataset
-    train_loader = torch.utils.data.DataLoader(dataset=train_data, batch_size=batch_size) # αν θέλεις να τρέξει όλα τα δεδομένα σε ένα batch, βάλε -> batch_size=train_data.__len__()
-    val_loader = torch.utils.data.DataLoader(dataset=val_data, batch_size=batch_size) # αν θέλεις να τρέξει όλα τα δεδομένα σε ένα batch, βάλε -> batch_size=val_data.__len__()
-    if return_loaders: return train_loader, val_loader, scaler
+        if tf_like_output: target_data = windowed_data[:,1:output_size+1,:] # με πρόβλεψη επόμενων σημείων πλήθους ίσου με το input, μετατοπισμένων κατά μία θέση
+        if move_to_gpu == 'all': input_data=input_data.to(device); target_data=target_data.to(device) # εδώ τα data σίγουρα παύουν να είναι views. Για αυτό πιο κάτω στο training μόνο σε αυτή την περίπτωση τα batches δεν αντιγράφονται
+        dataset = torch.utils.data.TensorDataset(input_data, target_data)
+        train_data, val_data = torch.utils.data.dataset.random_split(dataset, [0.8, 0.2])
+        train_loader = torch.utils.data.DataLoader(dataset=train_data, batch_size=batch_size) # αν θέλεις να τρέξει όλα τα δεδομένα σε ένα batch, βάλε -> batch_size=train_data.__len__()
+        val_loader = torch.utils.data.DataLoader(dataset=val_data, batch_size=batch_size) # αν θέλεις να τρέξει όλα τα δεδομένα σε ένα batch, βάλε -> batch_size=val_data.__len__()
+        return train_loader, val_loader, scaler
 
 #--------------------------------------------------------------------------------------------
 
@@ -394,153 +277,93 @@ class LSTM_fc(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers=num_layers
         self.output_size = output_size
+        if bidirectional: self.bidirectional = 2
+        if not(bidirectional): self.bidirectional = 1
 
-        self.norm_layer = nn.LayerNorm((self.seq_len, 1))
         self.lstm=nn.LSTM(1, self.hidden_size, self.num_layers, batch_first=True, bidirectional=bidirectional) # nn.LSTM has dynamic layers throught the num_layer parameter which creates stacked LSTM
-        self.linear1 = nn.Linear(self.hidden_size, self.output_size)
-        self.linear2 = nn.Linear(self.hidden_size, 1)
-        self.linear3 = nn.Linear(self.seq_len, self.output_size)
+        self.linear1 = nn.Linear(self.bidirectional * self.num_layers, 1) # combines all h_t's (inverse and straight form all layers) into one 
+        self.linear2 = nn.Linear(self.hidden_size, self.output_size) # from the h_t's it produces the final output
+        self.linear3 = nn.Linear(self.bidirectional*self.hidden_size, 1) # combines straight and inverse h_t's
+        self.linear4 = nn.Linear(self.seq_len, self.output_size) # combines the points from time steps into final output
+
 
     def forward(self, x):
-        # batch_size = x.size(0) # για αρχικοποίηση h_0, c_0
-        # d=2 if bidirectional else 1
-        # h_0 = torch.zeros(d*self.num_layers, batch_size, self.hidden_size) # αρχικοποίηση h_0
-        # c_0 = torch.squeeze(x).repeat(d*self.num_layers, 1, 1) # αρχικοποίηση της cell_state στο input (ResNet-like)
-        if scalling_manner == 'input_layer_norm': x=self.norm_layer(x)
-        out, (h_n,c_n) = self.lstm(x) # out dims (batch_size, L, hidden_size) if batch_first=True
-        if bidirectional:
-            out = out[: ,:,0] + out[:,:,1] # the forward and inverse output are being summed, but any other operation could be conducted, like multiplication
-            out = torch.unsqueeze(out, 2)
-            h_n = torch.sum(h_n, dim = 0) # if num_layers >1 and bidirectional=True, then it sums the h_n of all layers both stacked forward and stacked backward
-            h_n = torch.unsqueeze(h_n, 0)
-            # c_n = c_n[0,:,:] + c_n[1,:,:] # c_n is not used as an output so this line is not needed
-        if self.num_layers > 1: # this part sums the outputs of all lstm layers. Instead of summation, other operations could be used, like multiplication
-            h_n=torch.sum(h_n, dim = 0)
-            h_n = torch.unsqueeze(h_n, 0)
-        if only_last_seq:  out = self.linear1(h_n) # using as output of the nn.lstm only the last ouput -> the output of the whole network will have shape (batches, 1, output_size)
-        if not(only_last_seq):
-            out = self.linear2(out)
-            out = torch.squeeze(out, 2)
-            out = self.linear3(out)
-            out = torch.unsqueeze(out, 1)
-        # return x + torch.unsqueeze(torch.squeeze(out), 2) # -> if used as ResNet. In that case out and x must have equal dimensionality
-        return out
-    
-## Create custom loss function of normalized cross correlation (the purpose is to maximaze cross-correlation by minimizing [1-cross_correlation])
-class norm_cross_cor_loss(nn.Module):
-    def __init__(self):
-        super(norm_cross_cor_loss, self).__init__()
+        # out is all (h_t) from the last layer of the LSTM for each time step (num_layers doesnt change it). In bidirectional LSTM it cnotains conactenated straight h_n and inverse h_n for each time step (in the 3rd axis)
+        # h_n contains the h_n from last time step. It contains h_n of last time steps for all layer. It contains strait and inverse h_t if LSTM is bidirectional. so its 1st axis is bidirectional*num_layers
+        out, (h_n, _) = self.lstm(x) # out dims (batch_size, L, hidden_size) if batch_first=True
+        if lstm_seq_type == 'seq2one': 
+            x = h_n # because 'seq2one' I keep only the last h_n, throwing the other time_steps
+            x = torch.transpose(x, 0, 1) # put the batches in first axis
+            x = torch.transpose(x, 1, 2) # swap in order to be appropriate for linear layers
+            x = self.linear1(x) # if bidirectional = False & num_layers = 1, this does nothing (it has 1 input to 1 output)
+            x = torch.squeeze(x)
+            x = self.linear2(x)
+        if lstm_seq_type == 'seq2seq': 
+            x = out # because seq to one I keep only the  h_n's from all time steps
+            x = self.linear3(x)
+            x = torch.squeeze(x)
+            x = self.linear4(x)
+        return x
 
-    def forward(self, predicted, target):
-        pred_diffs = predicted - torch.mean(predicted, dim=1).unsqueeze(1).repeat(1, predicted.shape[1])       
-        target_diffs = target - torch.mean(target, dim=1).unsqueeze(1).repeat(1, target.shape[1]) 
-        numerator = torch.sum(pred_diffs*target_diffs, dim=1)
-        denominator_pred = torch.sqrt(torch.sum(pred_diffs**2, dim=1))
-        denominator_target = torch.sqrt(torch.sum(target_diffs**2, dim=1))
-        norm_cc = torch.div(numerator, denominator_pred*denominator_target)
-        # norm_cc = torch.abs(norm_cc) # negative values might make learning harder
-        loss_value = 1 - norm_cc # the purpose is for norm_cross_cor to be as closest to 1 as possble. So if 1 - loss_value = 0 => loss_value = 1
-        loss_value = loss_value.mean() # sum losses of all batch data
-        return loss_value
 #--------------------------------------------------------------------------------------------
 
 ### train & validate the LSTM model
-def training_lstm_loop(model, criterion, optimizer, epochs, train_loader, val_loader, scaling_method, model_number, measure_train_time:bool):
+def training_lstm_loop(model, criterion, optimizer, num_epochs, train_loader, val_loader, model_number):
     """This is the NN training function. It recieves the typical parameters fo model, loss function (criterion), optimizer and epochs. 
     It also recieves as input the torch dataloader objects for training ana validation data. """
 
     print('start training')
-    if measure_train_time: tic = time.perf_counter()
-    
-    num_epochs = epochs
-
-    losses_list=[]
+    epoch_val_loss = 10^6 # initialization for the loop
+    train_losses_list=[]
     val_losses_list=[]
-    val_mean_loss = 10^6 # initialization for the loop
     training_string =''
     time_str='' # initialization if measure_time = False
 
     for epoch in range(num_epochs):
-        if measure_train_time: t1 = time.perf_counter()
-        ### training
+        # train_time = []
         model.train()
-        train_losses = []
-        if measure_train_time: norm_time = []
-        if measure_train_time: train_time = []
-        for x_batch, y_batch in train_loader:
-            # if not(run_to_gpu_all): x_batch, y_batch = x_batch.detach().clone().numpy(), y_batch.detach().clone().numpy() # τα batches δεν έχουν μόνο grad ΑΛΛΑ ίσως είναι και views των data, αρα θα πρέπει να γίνουν ανεξάρτητα για να μη δημιουργηθούν σφάλματα στο scaling
-            # # if scalling_manner in ['norm_batches', 'norm_only_input_batches']:
-            # #     scaler = signal_handler.lfp_scaler(scaling_method, scaling_power=4)
-            # #     if measure_train_time: t1 = time.perf_counter()
-            # #     with torch.no_grad():
-            # #         # print('Batches normalization begins')
-            # #         x_batch = scaler.normalize3d(x_batch)
-            # #         if scalling_manner != 'norm_only_input_batches': y_batch = scaler.normalize3d(y_batch)
-            # #         # print('Batches normalized')
-            # #     if measure_train_time: t2 = time.perf_counter()
-            # #     if measure_train_time: norm_time.append(t2-t1)
-            # if not(run_to_gpu_all): x_batch = torch.from_numpy(x_batch).requires_grad_()
-            # if not(run_to_gpu_all): y_batch = torch.from_numpy(y_batch).requires_grad_()
-            if run_to_gpu_batch: x_batch = x_batch.to(device); y_batch = y_batch.to(device) 
-            train_pred = model(x_batch)
-            train_pred = torch.squeeze(train_pred)
-            y_batch = torch.squeeze(y_batch)
-            # print(y_batch - train_pred) # αν η διαφορά είναι πολύ μικρή ίσως τα δεδομένα χρειάζονται κανονικοποίηση
-            loss = criterion (y_batch, train_pred)
+        t1 = time.perf_counter()
+        batch_train_losses = []
+        for x_train, y_train in train_loader:
+            if move_to_gpu != 'None': x_train = x_train.to(device); y_train = y_train.to(device)
+            train_pred = model(x_train)
+            train_pred = torch.squeeze(train_pred); y_train = torch.squeeze(y_train)
+            loss = criterion (y_train, train_pred)
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-            train_losses.append(loss.item()) # list of train_losses for every batch
-        mean_loss = sum(train_losses)/len(train_losses) # mean of train_losses of all batches in every epoch
-        if measure_train_time: t2 = time.perf_counter()
-        if measure_train_time: train_time.append(t2-t1)
-        del x_batch; del y_batch; del train_pred # these variables are deleted in order to save memory
+            batch_train_losses.append(loss.item()) # list of train_losses for every batch
+        t2 = time.perf_counter()
+        epoch_train_loss = sum(batch_train_losses)/len(batch_train_losses) # mean of train_losses of all batches in every epoch
+        train_time = t2 - t1
 
-        ### validation
-        val_mean_loss_old = val_mean_loss #; print(val_mean_loss_old)
         model.eval()
+        epoch_val_loss_old = epoch_val_loss
+        batch_val_losses = []
         with torch.no_grad():
-            val_losses =[]
             for x_val, y_val in val_loader:
-                # if not(run_to_gpu_all): x_val, y_val = x_val.detach().clone().numpy(), y_val.detach().clone().numpy() # τα batches δεν έχουν μόνο grad ΑΛΛΑ ίσως είναι και views των data, αρα θα πρέπει να γίνουν ανεξάρτητα για να μη δημιουργηθούν σφάλματα στο scaling
-                # # if scalling_manner in ['norm_batches', 'norm_only_input_batches']:
-                # #     with torch.no_grad():
-                # #         x_val = scaler.normalize3d(x_val)
-                # #         if scalling_manner != 'norm_only_input_batches': y_val = scaler.normalize3d(y_val)
-                # if not(run_to_gpu_all): x_val = torch.from_numpy(x_val)#.requires_grad_()
-                # if not(run_to_gpu_all): y_val = torch.from_numpy(y_val)#.requires_grad_()
-                if run_to_gpu_batch: x_val = x_val.to(device); y_val = y_val.to(device)   
+                if move_to_gpu != 'None': x_val = x_val.to(device); y_val = y_val.to(device)
                 test_pred = model(x_val)
-                test_pred = torch.squeeze(test_pred)
-                y_val = torch.squeeze(y_val)
+                train_pred = torch.squeeze(train_pred); y_val = torch.squeeze(y_val)
                 val_loss = criterion (y_val, test_pred)
-                val_losses.append(val_loss.item()) # list of val_losses for every batch
-            val_mean_loss = sum(val_losses)/len(val_losses) # mean of val_losses of all batches in every epoch
-            if measure_train_time: train_time = np.array(train_time).mean()#; norm_time = np.array(norm_time).mean(); whole_time = train_time + norm_time
-        # print(f'Epoch:{epoch+1}/{num_epochs} -> train (batch mean) loss = {mean_loss} - val (batch mean) loss = {val_mean_loss}')
-        epoch_str = f'Epoch:{epoch+1}/{num_epochs} -> train (batch mean) loss = {mean_loss} - val (batch mean) loss = {val_mean_loss}'
-        # if measure_train_time: time_str = f'Computation times -> epoch_time: {whole_time} - train_time: {train_time} - norm_train_time: {norm_time}'; print(time_str)
-        if measure_train_time: time_str = f'train_time: {train_time}'
+                batch_val_losses.append(val_loss.item()) # list of val_losses for every batch
+            epoch_val_loss = sum(batch_val_losses)/len(batch_val_losses) # mean of train_losses of all batches in every epoch
+        
+        epoch_str = f'Epoch:{epoch+1}/{num_epochs} -> train (batch mean) loss = {epoch_train_loss} - val (batch mean) loss = {epoch_val_loss}'
+        time_str = f'train_time: {train_time}'
         print(epoch_str + ' - ' + time_str)
         training_string = training_string + '\n' + epoch_str + ' - ' + time_str
-        losses_list.append(mean_loss)
-        val_losses_list.append(val_mean_loss)
-        # print(losses_list)
-        # print(val_losses_list)
+        train_losses_list.append(epoch_train_loss)
+        val_losses_list.append(epoch_val_loss)
 
-        ## save the model of the best epoch (with the smallest val_mean_loss) -> δεν κάνει μεγάλη διαφορά με το να αποθήκευεται στο τέλος επειδη το loss σχεδόν πάντα μειώνεται
-        # check = val_mean_loss < val_mean_loss_old
-        # print(val_mean_loss_old, val_mean_loss, check)
-        if  val_mean_loss < val_mean_loss_old: 
+        if  epoch_val_loss < epoch_val_loss_old: 
             torch.save(model.state_dict(), PATH + 'project_files/models/model' + str(model_number) + '/LSTM_forecasting_model.pt')
+            #torch.save({'model_state_dict':model.state_dict(), 'model_args':{'input_size':model.input_size, 'hidden_size':model.hidden_size, 'num_layers':model.num_layers, 'output_size':model.output_size}}, PATH + 'project_files/MLP_fc_regressor.pt')
             best_model = model
-            best_val_score = val_mean_loss
+            best_val_score = epoch_val_loss
         
-    if measure_train_time: toc = time.perf_counter()
-    if measure_train_time: print ('whole training time is', toc - tic)
-
     ### plot train and validation losses
-    plt.plot(range(num_epochs), losses_list, label = 'Train loss')
+    plt.plot(range(num_epochs), train_losses_list, label = 'Train loss')
     plt.plot(range(num_epochs), val_losses_list, label = 'Val loss')
     plt.xlabel('epoch')
     plt.ylabel('loss')
@@ -549,8 +372,9 @@ def training_lstm_loop(model, criterion, optimizer, epochs, train_loader, val_lo
     plt.savefig(PATH + 'project_files/models/model' + str(model_number) + '/loss_to_epoch.png')
     plt.show()
     plt.close()
-
+        
     return best_model, training_string, best_val_score
+
 
 #--------------------------------------------------------------------------------------------
 
@@ -558,30 +382,37 @@ def training_lstm_loop(model, criterion, optimizer, epochs, train_loader, val_lo
 def create_training_report(downsample_scale, hidden_state_dim, num_layers, batch_size, lr, momentum, window_step, scaling_method, tag, input_size, output_size, training_string, model_number):
     """This function creates a small text file with the parameters and the results of the training"""
     
+    files_string = f'files used: {tag}'
     ds_string = f'Downsampling: {downsample_scale}'
+    scaling_string = f'normalization method: {scaling_method}'
+    window_string = f'sliding window step: {window_step}'
+
+    if move_to_gpu == 'all': training_method_string = 'training_method: All data passed to GPU in the beggining'
+    elif move_to_gpu == 'batches': training_method_string = 'training_method: Batches are passed to GPU seperately'
+    else: training_method_string = f"training_method: 'cpu'"
+    bidirectional_str = f'The LSTM is bidirectional: {bidirectional}'
+    train_lstm_str = f'train with only last sequence (h_n) or all sequences: {lstm_seq_type}'
+    fc_move_by_one_string = f'tf_like_output: {tf_like_output}'
+    optimizer_str = f'Optimizer used for training: {optimizer_used}'
+    loss_str = f'Loss function used for training: {loss_function_used}'
+
+    input_string = f'input size: {input_size}'
+    output_string = f'output size: {output_size}'
     hidden_size_string = f'Size of LSTM hidden state: {hidden_state_dim}'
     layers_string = f'Number of stacked LSTM layers: {num_layers}'
     batch_string = f'Size of batches: {batch_size}'
     lr_string = f'Learning rate: {lr}'
     mom_string = f'Momentum: {momentum}'
-    window_string = f'sliding window step: {window_step}'
-    scaling_string = f'normalization method: {scaling_method}'
-
-    files_string = f'files used: {tag}'
-    input_string = f'input size: {input_size}'
-    output_string = f'output size: {output_size}'
     
-    fc_move_by_one_string = f'fc_move_by_one: {fc_move_by_one}'
-    scaling_manner_string = f'scaling_manner: {scalling_manner}'
-    train_lstm_str = f'train with only last sequence (h_n): {only_last_seq}'
-    bidirectional_str = f'The LSTM is bidirectional: {bidirectional}'
-    if run_to_gpu_all == 1: training_method_string = 'training_method: All data passed to GPU in the beggining'
-    elif run_to_gpu_batch == 1: training_method_string = 'training_method: Batches are passed to GPU seperately'
-    else: training_method_string = f"training_method: 'cpu'"
+    data_string = (files_string +'\n'+ds_string +'\n'+scaling_string +'\n'+window_string)
+    globals_string = (training_method_string +'\n'+bidirectional_str +'\n'+train_lstm_str +'\n'+fc_move_by_one_string +'\n'+optimizer_str +'\n'+loss_str)
+    train_params_string = (input_string +'\n'+output_string +'\n'+hidden_size_string +'\n'+layers_string +'\n'+batch_string +'\n'+lr_string +'\n'+mom_string)
 
-    whole_string = (ds_string + '\n'+hidden_size_string + '\n'+layers_string + '\n'+batch_string + '\n'+lr_string + '\n'+ mom_string + '\n'+window_string + '\n'+scaling_string + 
-                    '\n\n'+files_string + '\n'+input_string + '\n'+output_string + '\n\n'+fc_move_by_one_string + '\n'+scaling_manner_string + '\n'+training_method_string + 
-                    '\n' + train_lstm_str + '\n' + bidirectional_str + '\n\n\n'+ training_string)
+    whole_string = (data_string +'\n\n'+ globals_string +'\n\n'+ train_params_string +'\n\n\n'+ training_string)
+
+    # whole_string = (ds_string + '\n'+hidden_size_string + '\n'+layers_string + '\n'+batch_string + '\n'+lr_string + '\n'+ mom_string + '\n'+window_string + '\n'+scaling_string + 
+    #                 '\n\n'+files_string + '\n'+input_string + '\n'+output_string + '\n\n'+fc_move_by_one_string +'\n'+training_method_string + 
+    #                 '\n' + train_lstm_str + '\n' + bidirectional_str + '\n\n\n'+ training_string)
     with open(PATH + '/project_files/models/model' + str(model_number) + '/training_log.txt', "w+") as file: file.write(whole_string)
 
 
@@ -594,9 +425,9 @@ def LSTM_load(model_number, input_size, hidden_state_dim, num_layers, output_siz
 
 
 ### saves the parameters of the LSTM model to a dictionary and then saves the dictionary to a picle file
-def save_params(downsample_scale, hidden_state_dim, num_layers, batch_size, lr, window_step, scaling_method, tag, input_size, output_size, training_string, model_number):
-    dict_param = {'downsample_scale':downsample_scale, 'hidden_state_dim':hidden_state_dim, 'num_layers':num_layers, 'batch_size':batch_size, 'lr':lr, 
-                  'window_step':window_step, 'scaling_method':scaling_method, 'tag':tag, 'input_size':input_size, 'output_size':output_size,  'training_string':training_string}
+def save_params(tag, downsample_scale, scaling_method, input_size, output_size, hidden_state_dim, num_layers, batch_size, lr, window_step, training_string, model_number):
+    dict_param = {'tag':tag, 'downsample_scale':downsample_scale, 'scaling_method':scaling_method, 'input_size':input_size, 'output_size':output_size, 
+    'hidden_state_dim':hidden_state_dim, 'num_layers':num_layers, 'batch_size':batch_size, 'lr':lr, 'window_step':window_step, 'training_string':training_string }
     with open(PATH + '/project_files/models/model' + str(model_number) + '/LSTM_params.pkl', "wb") as file: pickle.dump(dict_param, file)
 
 
@@ -617,17 +448,17 @@ def lstm_generate_lfp(model, signal, num_gen_points:int, scaling_method, only_ge
         5) if only_gen_signal is False the functios put the generated signal in the end of the input signal. If it's True it returns only the generated signal ommiting the input signal
     """""
 
-    if scalling_manner in ['norm_whole_files', 'norm_windows_before_split', 'norm_windows_after_split']: scaler = signal_handler.lfp_scaler(scaling_method, scaling_power=4)
+    scaler = signal_handler.lfp_scaler(scaling_method, scaling_power=4)
     model = model.to('cpu') # στέλνει το μοντέλο στη cpu για να γίνει η παραγωγή σήματος. Δε χρειάζεται η gpu για αυτό το task.
     if torch.is_tensor(signal):
         signal = signal.to('cpu') # στέλνει το σήμα στη cpu για να γίνει η παραγωγή σήματος. Δε χρειάζεται η gpu για αυτό το task.
         signal = signal.cpu().numpy()
     else: signal = np.float32(signal)
-    if scalling_manner in ['norm_whole_files', 'norm_windows_before_split', 'norm_windows_after_split']: signal = scaler.fit_transform1d(signal) # κάνονικοποιεί τo σήμα-input με τον ίδιο τρόπο που έχει μάθει να δέχεται κανονικοποιημένα inputs το LSTM
+    signal = scaler.fit_transform1d(signal) # κάνονικοποιεί τo σήμα-input με τον ίδιο τρόπο που έχει μάθει να δέχεται κανονικοποιημένα inputs το LSTM
     if not(only_gen_signal): generated_signal= list(signal) # αν θέλουμε το παραγώμενο σήμα να περιέχει το input
     if only_gen_signal: generated_signal=[] # αν θέλουμε το παραγώμενο σήμα να περιέχει μονο το generated χωρίς το input
     fc_repeats = int(num_gen_points/model.output_size) + 1 # παράγει μερικά παραπάνω σημεία και κόβει τα τελευταία για να μπορεί να παράγει σημεία που δεν είναι πολλπλάσια του output_size
-    if fc_move_by_one: fc_repeats = num_gen_points
+    if tf_like_output: fc_repeats = num_gen_points
     
     model.eval()
     signal =  torch.from_numpy(signal)
@@ -637,22 +468,21 @@ def lstm_generate_lfp(model, signal, num_gen_points:int, scaling_method, only_ge
         starting_signal_input=torch.unsqueeze(starting_signal_input, 0)
         output = model(starting_signal_input)
         output = torch.squeeze(output)
-        if fc_move_by_one: output = output[-1]
+        if tf_like_output: output = output[-1]
         if output.shape == torch.Size([]): output = torch.unsqueeze(output, 0) # αυτό χρειάζεται όταν το output εχει διάσταση 1
         generated_signal = generated_signal + list(output.detach().numpy()) # εδώ επεκτείνεται η λίστα generated_signal, που θα είναι το τελικό output της συνάρτησης
-        if not(fc_move_by_one): starting_signal = torch.cat((starting_signal, output), dim=0)[model.output_size:] # κατασκευή νέου input για το model
-        if fc_move_by_one: starting_signal = torch.cat((starting_signal, output), dim=0)[1:] # κατασκευή νέου input για το model
+        if not(tf_like_output): starting_signal = torch.cat((starting_signal, output), dim=0)[model.output_size:] # κατασκευή νέου input για το model
+        if tf_like_output: starting_signal = torch.cat((starting_signal, output), dim=0)[1:] # κατασκευή νέου input για το model
     generated_signal = np.array(generated_signal) # η λίστα generated_signal μετατρέπεται σε np.ndarray
     if not(only_gen_signal): generated_signal = generated_signal[: signal.shape[0] + num_gen_points] # κρατιοούνται μόνο τα σημεία που ζητήθηκαν να παραχθούν (είχαν παραχθεί λίγα περισσότερα, που είναι πολλαπλάσια του LSTM output)
     if only_gen_signal: generated_signal = generated_signal[:num_gen_points] # αν θέλουμε το παραγώμενο σήμα να περιέχει μονο το generated χωρίς το input χρειάζεται κι αυτή η εντολή
-    if scalling_manner in ['norm_whole_files', 'norm_windows_before_split', 'norm_windows_after_split']: generated_signal = scaler.inverse1d(generated_signal) # αποκανονικοποίηση του τελικού αποτελέσματος για να είναι στην κλίμακα του LFP
-    # generated_signal = generated_signal - generated_signal.mean() # μηδενισμός του μέσου όρου αν δε γίνει άλλη κανονικοποίηση
+    generated_signal = scaler.inverse1d(generated_signal) # αποκανονικοποίηση του τελικού αποτελέσματος για να είναι στην κλίμακα του LFP
     return generated_signal
 
 #--------------------------------------------------------------------------------------------
 
 ###  test trained LSTM metrics and visualizations
-def test_lstm(lstm_model, test_series, num_gen_points, number_of_starting_points, scaling_method, make_barplots, return_metrics = 'None'):
+def evaluate_lstm(lstm_model, test_series, num_gen_points, number_of_starting_points, scaling_method, make_barplots, return_metrics = 'None'):
     """Uses a test series independent from the validation data, to test how effective a trained forecasting LFP LSTM model is"""
     print('\nTest trained LSTM: Compare actual and generated signal')
 
@@ -679,6 +509,7 @@ def test_lstm(lstm_model, test_series, num_gen_points, number_of_starting_points
     RMS_PSD_str = f'Root mean square error of PSD is {RMS_PSD_list.mean()}'
 
     testing_string = title_str + '\n' + MAE_str + '\n' + RMSE_str + '\n' + norm_cross_corr_str + '\n' + max_cross_cor_str + '\n' + RMS_PSD_str
+    print(testing_string)
 
     # visual representation on a random point of the signal
     starting_point = starting_points_list[0]
@@ -688,8 +519,8 @@ def test_lstm(lstm_model, test_series, num_gen_points, number_of_starting_points
     fs = 1/(test_series[1,3] - test_series[1,2])
     actual_signal = test_signal [starting_point : starting_point + num_gen_points]
     lstm_gen_signal = lstm_generate_lfp(lstm_model, tensor_test_signal[:starting_point], num_gen_points, scaling_method, only_gen_signal=1)
-    visual_fc_comparison(lstm_gen_signal, actual_signal, fs, domain = 'both', save_name='lstm')
-    visual_fc_comparison(lstm_gen_signal, actual_signal, fs, domain = 'cross-correlation')
+    visual_fc_comparison(actual_signal, fs, lstm_gen_signal, 'lstm', domain = 'both')
+    visual_fc_comparison(actual_signal, fs, lstm_gen_signal, 'lstm', domain = 'cross-correlation')
 
     if return_metrics == 'lists': return MAE_list, RMSE_list, norm_cross_corr_list, max_cross_cor_list, RMS_PSD_list
     if return_metrics == 'means': return MAE_list.mean(), RMSE_list.mean(), norm_cross_corr_list.mean(), max_cross_cor_list.mean(), RMS_PSD_list.mean()
@@ -701,45 +532,13 @@ def test_lstm(lstm_model, test_series, num_gen_points, number_of_starting_points
 
 
 ### εκπαιδεύει στο forecasting με άλλες μεθόδους πέραν του LSTM. Μπορείς να προσθέσεις και άλλες μεθόδους αν θέλεις.
-def train_older_methods(ml_method, tag, downsample_scale, scaling_method, input_size, output_size, sliding_window_step, batch_size, model_save_name:str):
+def train_older_methods(ml_method, tag, downsample_scale, scaling_method, input_size, output_size, sliding_window_step, model_save_name:str):
     print('\nTrain ' + ml_method + ' regressor:')
     
     save_load_path= PATH + 'project_files/fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy' # my PC load file
     lfp_data = np.load(save_load_path)
     print('Extracted/Loaded data have shape:', lfp_data.shape) # πρόκειται για αρχεία (καταγραφές LFP) 20 λεπτων. Οι γραμμές είναι ο αριθμός των καταγραφών και οι στήλες είναι το μήκος των καταγραφών
-    x_data, y_data, scaler  = prepare_data2(lfp_data, input_size, output_size, sliding_window_step, batch_size, scaling_method, cut_with_numpy=True, return_loaders=False)
-    # x_data, y_data = x_data.numpy(), y_data.numpy() # αν τα δεδομένα δεν είναι ndarrays
-
-    # # αν θέλεις τα δεδομένα να είναι ακριβως τα ίδια με αυτά του LSTM (αλλίως είναι διαφορετικά λόγω διαφορετικού train-test split), χρησιμοποίησε αυτές εδώ
-    # # αλλά μάλλον κάτι τέτοι δε θα είχε νόημα επειδή τα δεδομένα που χρησιμοποιούνται στο LSTM είναι πάρα πολλά για να εκπαιδεύσουν αυτούς τους αλγόριθμους
-    # def recreate_data(loader, extracted_data):
-    #     if extracted_data == 'input': s=0
-    #     if extracted_data == 'target': s=1
-    #     data = loader.dataset[0][s].numpy()
-    #     for idx, batch in enumerate(loader):
-    #         if idx > 0:
-    #             data = np.vstack((data, torch.squeeze(batch[s]).numpy()))
-    #     return data
-    # train_loader, val_loader, scaler  = prepare_data(lfp_data, input_size, output_size, sliding_window_step, batch_size, scaling_method)
-    # x_train = recreate_data(train_loader, 'input')
-    # y_train = recreate_data(train_loader, 'target')
-    # x_test = recreate_data(val_loader, 'input')
-    # y_test = recreate_data(val_loader, 'target')
-    
-    # SCALING DATA
-    ## scaling_data -> if scaling_manner = norm_all_data, then data are normazized inside the prepare_data function, else they are normalized here
-    ## if scalling_manner != 'norm_all_data':
-    ##     lfp_data = scaler.normalize2d(lfp_data) # κανονικοποιεί το σήμα
-    ##     scaler.fit2d(lfp_data) # εξάγει κοινές παραμέτρους κανονικοποίησης για όλο το σήμα
-    #### υπάρχει ο 'κίνδυνος' να ξανακανονικοποιηθούν τα δεδομένα αν έχει γίνει scaling_manner = norm_all_data, αλλά αυτό μάλλον δεν αποτελεί μεγάλο πρόβλημα επειδή δε θα αλλάξουν ιδιαίτερα μορφή
-    if scalling_manner == 'input_layer_norm': x_data = lfp_data = scaler.normalize2d(x_data) 
-    # if scalling_manner in ['norm_batches', 'norm_only_input_batches', 'input_layer_norm_no_output_norm']: y_data = lfp_data = scaler.normalize2d(y_data)
-
-    # x_data=np.reshape(x_data, (x_data.shape[0]*x_data.shape[1], x_data.shape[2])) # transforms the data in the sklearn format
-    # y_data=np.reshape(y_data, (y_data.shape[0]*y_data.shape[1], y_data.shape[2])) # transforms the data in the sklearn format
-    x_data = np.squeeze(x_data)
-    y_data = np.squeeze(y_data)
-    # x_train, x_test, y_train, y_test = model_selection.train_test_split(x_data, y_data, train_size=0.9) # δε χρειάζεται αφού τελικά τα testing data είναι άλλα
+    x_data, y_data, _  = prepare_data(lfp_data, input_size, output_size, sliding_window_step, scaling_method, prepare_data_for_lstm=False)
 
     if ml_method == 'linear':
         model = lrm.LinearRegression()
@@ -761,9 +560,9 @@ def train_older_methods(ml_method, tag, downsample_scale, scaling_method, input_
 #--------------------------------------------------------------------------------------------
 
 def ml_generate_lfp(model, signal:np.ndarray, input_size:int, output_size:int, num_gen_points:int, scaling_method, only_generated:bool):
-    if scalling_manner != 'No scaling': scaler = signal_handler.lfp_scaler(scaling_method, scaling_power=4)
+    scaler = signal_handler.lfp_scaler(scaling_method, scaling_power=4)
     num_predictions =  int(num_gen_points/output_size) + 1
-    if scalling_manner != 'No scaling': signal = scaler.fit_transform1d(signal) # κανονικοποίηση
+    signal = scaler.fit_transform1d(signal) # κανονικοποίηση
     input_signal = signal[(len(signal)-input_size) :] # λήψη των τελευταιων σημείων του σήματος για forecasting
     input_signal = input_signal.reshape(1,-1) # πρέπει να είναι σε αυτή τη μορφή για να εισαχθεί στο predict
     if only_generated: generated_signal = []
@@ -778,67 +577,47 @@ def ml_generate_lfp(model, signal:np.ndarray, input_size:int, output_size:int, n
     generated_signal = np.array(generated_signal)
     if not(only_generated): generated_signal =  generated_signal[: len(signal)+num_gen_points]
     if only_generated: generated_signal =  generated_signal[:num_gen_points]
-    if scalling_manner != 'No scaling': generated_signal = scaler.inverse1d(generated_signal)
+    generated_signal = scaler.inverse1d(generated_signal)
     return generated_signal
 
 
 #------------------------------------------------------------------------------------------------------------------------------------------------------------------------------   
 #------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-
-def visual_fc_comparison(model_generated_signal, actual_signal, fs, domain, save_name='None'):
-    """This function compares a generated/forecasted signal from an ML algorithm, with the actual signal"""
-    
-    # compare the two time-series (i.e. comparison in the time domain)
+def visual_fc_comparison(actual_signal, fs, gen_signal1, ml_method1:str, domain, save=save_plots, gen_signal2='None', ml_method2='None'):
+    # compare the time-series (i.e. comparison in the time domain)
     if domain in ['time', 'both']: 
         plt. plot(actual_signal, label = 'actual signal')
-        plt. plot(model_generated_signal, label = 'generated signal')
-        plt.legend()
-        plt.title('Visual comparison between generated and actual signal')
-        if save_name!='None': plt.savefig(PATH + 'project_files/dipl_images/' + save_name +'_time_domain.png')
-        plt.show()
-        plt.close()
-
-    # compare the two time-series' frequencies (i.e. comparison in the frequency domain)
-    if domain in ['frequency', 'both']:
-        f1, Pxx_1 = sn.periodogram(actual_signal, fs=fs, return_onesided=True, scaling='density')
-        f2, Pxx_2 = sn.periodogram(model_generated_signal, fs=fs, return_onesided=True, scaling='density')
-        plt.plot(f1,Pxx_1, label = 'actual signal')
-        plt.plot(f2,Pxx_2, label = 'generated signal')
-        plt.suptitle('comparison of generated and actual signal frequencies (Fourier-PSD)')
-        #plt.title(f'sampling frequency is {fs} due to downsampling', fontsize = 9)
-        plt.legend()
-        if save_name!='None': plt.savefig(PATH + 'project_files/dipl_images/' + save_name +'_freq_domain.png')
-        plt.show()
-        plt.close()
-
-    # crate the diagram of the cross-correlation of the two singals (actual & model_generated)
-    if domain == 'cross-correlation':
-        sn_corr = norm_cross_cor(actual_signal, model_generated_signal)
-        plt.plot(sn_corr); plt.title('normalized cross correlation'); plt.show(); plt.close() # η corss-correlation ΕΙΝΑΙ κανονικοποιήμένη στο [-1,1]
-
-def three_fold_visual_fc_comparison(actual_signal, fs, gen_signal1, gen_signal2, ml_method1:str, ml_method2:str, save=True): 
-        plt. plot(actual_signal, label = 'actual signal')
         plt. plot(gen_signal1, label = ml_method1 +' generated signal')
-        plt. plot(gen_signal2, label = ml_method2 +' generated signal')
+        if not isinstance(gen_signal2, str): plt. plot(gen_signal2, label = ml_method2 +' generated signal')
         plt.legend()
-        plt.title('Visual comparison between actual and generated signals')
+        plt.title('Visual comparison between actual and generated signal(s)')
+        if ml_method2 == 'None': ml_method2 = ''
         if save: plt.savefig(PATH + 'project_files/dipl_images/' + ml_method1 + '-'+ ml_method2 +'_time_domain.png')
         plt.show()
         plt.close()
 
+        # compare the two time-series' frequencies (i.e. comparison in the frequency domain)
+    if domain in ['frequency', 'both']:
         f1, Pxx_1 = sn.periodogram(actual_signal, fs=fs, return_onesided=True, scaling='density')
         f2, Pxx_2 = sn.periodogram(gen_signal1, fs=fs, return_onesided=True, scaling='density')
-        f3, Pxx_3 = sn.periodogram(gen_signal2, fs=fs, return_onesided=True, scaling='density')
+        if not isinstance(gen_signal2, str): f3, Pxx_3 = sn.periodogram(gen_signal2, fs=fs, return_onesided=True, scaling='density')
         plt.plot(f1,Pxx_1, label = 'actual signal')
         plt.plot(f2,Pxx_2, label = ml_method1+' generated signal')
-        plt.plot(f3,Pxx_3, label = ml_method2+' generated signal')
+        if not isinstance(gen_signal2, str): plt.plot(f3,Pxx_3, label = ml_method2+' generated signal')
         plt.suptitle('comparison of generated and actual signal frequencies (Fourier-PSD)')
         # plt.title(f'sampling frequency is {fs} due to downsampling', fontsize = 9)
         plt.legend()
+        if ml_method2 == 'None': ml_method2 = ''
         if save: plt.savefig(PATH + 'project_files/dipl_images/' + ml_method1 + '-'+ ml_method2 +'_freq_domain.png')
         plt.show()
         plt.close()
+
+    # crate the diagram of the cross-correlation of the singals (actual & model_generated)
+    if domain == 'cross-correlation':
+        if gen_signal2!='None' or ml_method2!='None': print('This method plots cross-correlation only for one signal')
+        sn_corr = norm_cross_cor(actual_signal, gen_signal1)
+        plt.plot(sn_corr); plt.title('normalized cross correlation'); plt.show(); plt.close() # η corss-correlation ΕΙΝΑΙ κανονικοποιήμένη στο [-1,1]
 
 
 #--------------------------------------------------------------------------------------------
@@ -847,7 +626,7 @@ def produce_metric_list(model, model_type, test_series, starting_points_list, nu
     """This function recieves an ML model, a test series and a list of initiating points. Then it generates a signal from each initiating point and produces a metric of 
     comparison of the generated signal and the actual following signal. It then collects all these metrics from all the initiating points to a list. This is a random samling 
     method for collecting a sample of metrics from random initiating points, in order to be used for statistical hypotheses."""
-    # metric_list = []
+    
     starting_points_list = np.array(starting_points_list)
     metric_array_list = np.zeros(len(starting_points_list))
     fs = 1/(test_series[1,3] - test_series[1,2])
@@ -911,6 +690,8 @@ def statistical_comparison(lstm_metric_list, comparing_metric_list, normality_te
     έχουν ίσες διακυμάνσεις (κάτι που δε χρειάζεται στα εξαρτημένα δείγματα), και τα δεοδμένα να είναι ποσοτικά. Οπότε ουσιαστικά εδω πρέπει να ελεγχθει μόνο η κανονικότητα'''
     '''The Shapiro–Wilk test is more appropriate method for small sample sizes (<50 samples) although it can also be handling on larger sample size while Kolmogorov–Smirnov 
     test is used for n ≥50'''
+
+    print(f'\nCOMPARISON OF LSTM FORECASTING WITH: {comparing_name} | METRIC USED: {metric_name}')
     lstm_metric_list = np.array(lstm_metric_list)
     comparing_metric_list = np.array(comparing_metric_list)
     print('LSTM metric computed mean is', lstm_metric_list.mean())
@@ -1011,7 +792,7 @@ def statistical_comparison(lstm_metric_list, comparing_metric_list, normality_te
     plot_str = str_test + '\n' + p_str + '\n' + effect_size_str
     bbox = dict(boxstyle='round', fc='blanchedalmond', ec='orange', alpha=0.5)
     plt.text(0.5, 0.9, s=plot_str, bbox=bbox, horizontalalignment='center', verticalalignment='center', transform=plt.gca().transAxes)
-    plt.savefig(PATH + 'project_files/dipl_images/'+ comparing_name +'_' + metric_name + '_barplot.png')
+    if save_plots: plt.savefig(PATH + 'project_files/dipl_images/'+ comparing_name +'_' + metric_name + '_barplot.png')
     plt.show()
     plt.close()
 
@@ -1042,7 +823,7 @@ def Cohens_g(x1,x2):
 #--------------------------------------------------------------------------------------------
 
 # Αυτή η μέθοδος αναπαριστά γραφικά, πόσο καλή είναι η προβλεψη κατά μήκος του test σήματος LFP (εφόσον χρησιμοποιείται ένα σήμα για testing)
-def make_metric_barplot(starting_points_list, lstm_metric_list, metric, save=True):
+def make_metric_barplot(starting_points_list, lstm_metric_list, metric, save=save_plots):
     """This function recicieves the initiating points for forcasting, the metric produced by the comparison of the forecasted and the actual signal, and plots a
     barplot of the metric values according to the initiating points. The purpose of this function is to visually present how effective is the forecasting method in different
     parts across the signal"""
@@ -1094,12 +875,10 @@ def norm_cross_cor(a,b):
 #------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 #------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-
 if  __name__ == "__main__":
-    pass
-    run_main = 1
-    if run_main:
-        if save_main_output_to_file:
+    
+    if execute == 'main()':
+        if save_terminal_output_to_file:
             output_file = PATH + 'project_files/dipl_images/fc_LFP_output.txt'
             with open(output_file, 'w') as file: 
                 sys.stdout = file
@@ -1107,7 +886,7 @@ if  __name__ == "__main__":
                 sys.stdout = sys.__stdout__
         else:
             main()
-    else:
+    if execute == 'multiple_trainings':
         # multiple LSTM trainings for remote computer
         tag= 'All_EA_WT_0Mg'
         downsample_scale = 10
@@ -1147,6 +926,4 @@ if  __name__ == "__main__":
         # print('Extracted/Loaded data have shape:', lfp_data.shape) # πρόκειται για αρχεία (καταγραφές LFP) 20 λεπτων. Οι γραμμές είναι ο αριθμός των καταγραφών και οι στήλες είναι το μήκος των καταγραφών
         # train_loader, val_loader, _  = prepare_data2(lfp_data, input_size, output_size, sliding_window_step, batch_size, scaling_method, cut_with_numpy=0)
 
-    
-    
     
