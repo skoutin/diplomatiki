@@ -27,11 +27,11 @@ if not(remote_PC): PATH = 'D:/Files/peirama_dipl/' # my PC path
 if remote_PC: PATH = '/home/skoutinos/' # remote PC path
 
 execute = 'main()' # options: main() , 'multiple_trainings'
-save_terminal_output_to_file = False
-save_plots = False
+save_terminal_output_to_file = True
+save_plots = True
 
 move_to_gpu_list = ['None', 'all', 'batches'] # 'None'-> training is done in the cpu, 'all'-> all data are being moved in gpu at once, 'batches'-> data are move to gpu one batch at a time
-move_to_gpu = move_to_gpu_list[1]
+move_to_gpu = move_to_gpu_list[0]
 if move_to_gpu != 'None': device = 'cuda' if torch.cuda.is_available() else 'cpu'
 if move_to_gpu != 'None': print(torch.cuda.get_device_name())
 
@@ -40,7 +40,7 @@ loss_function_used_list = ['mse', 'mae', 'huber']
 loss_function_used = loss_function_used_list[0]
 
 tf_like_output = False # If true the tearget data will be same as the input data, bat one time step ahead e.g. input = x1,x2,...x10, ouput = x2,x3,...x11. This is used in teacher forcing taining
-lstm_seq_type = 'seq2one' # Determines if LSTM will use only the last ouput, or all of the outputs as it unrolls. Choises are 'seq2seq' or 'seq2one'
+lstm_seq_type = 'seq2seq' # Determines if LSTM will use only the last ouput, or all of the outputs as it unrolls. Choises are 'seq2seq' or 'seq2one'
 bidirectional = True # determines if the LSTM will be bidirectional or not
 
 #------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -50,8 +50,8 @@ def main():
 
     ###### DATA PARAMETERS
     tag= 'All_WT_0Mg' # All_EA_WT_0Mg' #'All_WT_0Mg'   # determines which groups of files will be loaded, and used for training
-    downsample_scale = 1000 # determines how many time will the signal be downsampled
-    sliding_window_step = 100 # this is the number of the window sliding for the creation of the windows that will be used for training
+    downsample_scale = 10 # determines how many time will the signal be downsampled
+    sliding_window_step = 10 # this is the number of the window sliding for the creation of the windows that will be used for training
     
     sliding_window_step_ml_methods = 50 # for the training of older methods that use a subset of whole training data by taking a bigger sliding window
     scaling_method_list = ['min_max', 'max_abs', 'z_normalization', 'robust_scaling', 'decimal_scaling', 'log_normalization', 'None']
@@ -74,15 +74,15 @@ def main():
     
     ##### TRAIN_SWITCH PARAMETERS
     train_LSTM = 1 # for True it trains the model, for False it loads a saved model # ΠΡΟΣΟΧΗ αν κάνεις load μοντέλο που το έχεις εκπαιδεύσει με άλλο output_type προφανώς θα προκύψει σφάλμα -> επιλύθηκε με την αποθήκευση και τη φόρτωση των παραμέτρων μαζί με το LSTM
-    load_lstm = 0
+    load_lstm = 1
     train_older = 0 # trains linear (autoregresson) and dummy regresson
-    load_older = 0
+    load_older = 1
     save_load_model_number = 0 # καθορίζει ποιο LSTM μοντέλο θα φορτωθεί (η αποθήκευση γίνεται στο φάκελο και τα μεταφέρεις manually στους φακέλους model)
-    evaluate_models = 0
-
+    evaluate_models = 1
 
     # Extract and save data for training and validation
     if extract_data:
+        if load_lstm: dict_train = load_params(save_load_model_number); tag, downsample_scale =  dict_train['tag'],  dict_train['downsample_scale'] # sets parameters to extract data according to loaded lstm
         save_load_path = PATH + 'project_files/fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy'
         lfp_data = signal_handler.extract_data(tag, downsample_scale, save_load_path) 
         print('Extracted/Loaded data have shape:', lfp_data.shape) # πρόκειται για αρχεία (καταγραφές LFP) 20 λεπτων. Οι γραμμές είναι ο αριθμός των καταγραφών και οι στήλες είναι το μήκος των καταγραφών
@@ -112,10 +112,8 @@ def main():
         print('length of check series is ', check_series.shape)
         num_gen_points = output_size #3 * output_size + 25 # 5 * output_size # αυτή η μεταβλητή καθορίζει πόσα σημεία θα γίνουν forecasting
         if output_size < 5: num_gen_points = 150 # για την περίπτωση που το ouput είναι πολύ μικρό
-        number_of_starting_points = 40 # καθορίζει πόσα τυχαία σημεία έναρξης της πρόβλεψης θα παρθούν για την παραγωγή των λιστών της κάθε μετρικής
-        evaluate_lstm(lstm_model, check_series, num_gen_points, number_of_starting_points, scaling_method, make_barplots=True)
-
-
+        number_of_starting_points = 100 # καθορίζει πόσα τυχαία σημεία έναρξης της πρόβλεψης θα παρθούν για την παραγωγή των λιστών της κάθε μετρικής
+        #evaluate_lstm(lstm_model, check_series, num_gen_points, number_of_starting_points, scaling_method, make_barplots=False)
 
 
     # train linear and dummy regressors with the same data
@@ -260,7 +258,8 @@ def prepare_data(lfp_data_matrix, input_size, output_size, window_step, scaling_
         if tf_like_output: target_data = windowed_data[:,1:output_size+1,:] # με πρόβλεψη επόμενων σημείων πλήθους ίσου με το input, μετατοπισμένων κατά μία θέση
         if move_to_gpu == 'all': input_data=input_data.to(device); target_data=target_data.to(device) # εδώ τα data σίγουρα παύουν να είναι views. Για αυτό πιο κάτω στο training μόνο σε αυτή την περίπτωση τα batches δεν αντιγράφονται
         dataset = torch.utils.data.TensorDataset(input_data, target_data)
-        train_data, val_data = torch.utils.data.dataset.random_split(dataset, [0.8, 0.2])
+        # το γεγονός ότι γίνεται random split στα παράθυρα προκαλεί temporal leakage, και καθιστά τσ validation scores μη αξιόπιστα. Θα έπρεπε είτε τα validation παράθυρα να είναι μετά από όλα τα trainin παράθυρα, είτε να προέρχονται από μια νέα χρονοσειρά όπως γίνται στο testing
+        train_data, val_data = torch.utils.data.dataset.random_split(dataset, [0.8, 0.2]) 
         train_loader = torch.utils.data.DataLoader(dataset=train_data, batch_size=batch_size) # αν θέλεις να τρέξει όλα τα δεδομένα σε ένα batch, βάλε -> batch_size=train_data.__len__()
         val_loader = torch.utils.data.DataLoader(dataset=val_data, batch_size=batch_size) # αν θέλεις να τρέξει όλα τα δεδομένα σε ένα batch, βάλε -> batch_size=val_data.__len__()
         return train_loader, val_loader, scaler
@@ -299,7 +298,7 @@ class LSTM_fc(nn.Module):
             x = torch.squeeze(x)
             x = self.linear2(x)
         if lstm_seq_type == 'seq2seq': 
-            x = out # because seq to one I keep only the  h_n's from all time steps
+            x = out # because seq to oneseq I keep only the  h_n's from all time steps
             x = self.linear3(x)
             x = torch.squeeze(x)
             x = self.linear4(x)
@@ -535,7 +534,7 @@ def evaluate_lstm(lstm_model, test_series, num_gen_points, number_of_starting_po
 def train_older_methods(ml_method, tag, downsample_scale, scaling_method, input_size, output_size, sliding_window_step, model_save_name:str):
     print('\nTrain ' + ml_method + ' regressor:')
     
-    save_load_path= PATH + 'project_files/fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy' # my PC load file
+    save_load_path = PATH + 'project_files/fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy' # my PC load file
     lfp_data = np.load(save_load_path)
     print('Extracted/Loaded data have shape:', lfp_data.shape) # πρόκειται για αρχεία (καταγραφές LFP) 20 λεπτων. Οι γραμμές είναι ο αριθμός των καταγραφών και οι στήλες είναι το μήκος των καταγραφών
     x_data, y_data, _  = prepare_data(lfp_data, input_size, output_size, sliding_window_step, scaling_method, prepare_data_for_lstm=False)
@@ -717,7 +716,8 @@ def statistical_comparison(lstm_metric_list, comparing_metric_list, normality_te
 
         # make histogram of differences
         plt.hist(diffs)
-        plt.title(f'Distribution of {metric_name} differences')
+        plt.axvline(np.median(diffs), color='red', linestyle='dashed', linewidth=2, label='Median')
+        plt.title(f'Distribution of {metric_name} differences with median')
         plt.xlabel('metric_values')
         plt.ylabel('frequencies')
         plt.show()
@@ -779,6 +779,7 @@ def statistical_comparison(lstm_metric_list, comparing_metric_list, normality_te
     # make barplots with confidence intervals
     lstm_conf_int = stats.norm.interval(confidence=0.95, loc=lstm_metric_list.mean(), scale= stats.sem(lstm_metric_list))
     comp_conf_int = stats.norm.interval(confidence=0.95, loc=comparing_metric_list.mean(), scale=stats.sem(comparing_metric_list))
+    paired_conf_int = stats.norm.interval(confidence=0.95, loc=diffs.mean(), scale=stats.sem(diffs))
     lstm_conf_int = np.array(lstm_conf_int); comp_conf_int = np.array(comp_conf_int) # turn them to arrays for logical indexing
     comp_conf_int[comp_conf_int<0]=0; lstm_conf_int[lstm_conf_int<0]=0 # μηδενισμός αρνητικών ορίων εμπιστοσύνης
     labels = ['LSTM metric', f'{comparing_name} metric']

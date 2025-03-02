@@ -351,9 +351,10 @@ def cut_to_events (name:str, downsampling:int, include_down_states:bool):
 #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-def visualise_lfp_signal(name:str, downsampling:int, save_name:str):
+def visualise_lfp_signal(name:str, downsampling:int, save_name:str, file_or_whole='file'):
     path = 'D:/Files/peirama_dipl/project_files/'
-    lfp_time_series = time_series(name, downsampling)
+    if file_or_whole=='file': lfp_time_series = time_series(name, downsampling)
+    if file_or_whole=='whole': lfp_time_series = combine (lists_of_names(name), downsampling)
     signal=lfp_time_series[0,:]
     time=lfp_time_series[1,:]
     plt.plot(time, signal)
@@ -728,24 +729,25 @@ class lfp_scaler:
 
 if  __name__ == "__main__":
     pass
-    # downsample_scale = 10000
-    # array = test_series = combine(lists_of_names('test'), downsample_scale) # create test data
-    # # np.save('D:/Files/peirama_dipl/project_files/test_series_ds'+ str(downsample_scale)  + '.npy', array)
+    downsample_scale = 10
+    test_series = combine(lists_of_names('test'), downsample_scale) # create test data
+    np.save('D:/Files/peirama_dipl/project_files/test_series_ds'+ str(downsample_scale)  + '.npy', test_series)
 
 
-    tag = 'WT1'
-    downsample_scale = 1000
-    extract_data(tag, downsample_scale, 'D:/Files/peirama_dipl/project_files/LSTM_fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy') # create training data
-    
+    # tag = 'WT1'
+    # downsample_scale = 1000
+    # extract_data(tag, downsample_scale, 'D:/Files/peirama_dipl/project_files/LSTM_fc_data_' + tag + '_ds'+ str(downsample_scale)  + '.npy') # create training data
     
     # downsampling = 1
     # time_ser = combine (lists_of_names('WT1'), downsampling)
     # check_signal_chars(time_ser, 'None', downsampling, check_basic_stats=1, check_time_chars=1, check_stat_diagrams=1, check_normality=1)
 
-    # name = 'WT1_1in6'
+    # name = 'WT2'
     # downsampling = 10
-    # visualise_lfp_signal(name, downsampling, save_name = 'None')
+    # visualise_lfp_signal(name, downsampling, save_name = 'None', file_or_whole='whole')
     # visualize_events(name, downsampling)
+
+
 
     # name = 'WT1_1in6'
     # downsampling = 1000
@@ -760,6 +762,7 @@ if  __name__ == "__main__":
     #     plot_PSD(name, downsampling, plot = 'with scipy')
 
     # check_signal_stats('All_EA_WT_0Mg', 10)
+    # check_signal_time_chars('All_EA_WT_0Mg', 10)
 
 
 
